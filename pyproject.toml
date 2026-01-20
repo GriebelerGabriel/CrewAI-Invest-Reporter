@@ -1,20 +1,32 @@
 [project]
-name = "latest_ai_development"
+name = "crewai_invest_reporter"
 version = "0.1.0"
-description = "latest-ai-development using crewAI"
+description = "crewai-invest-reporter using crewAI"
 authors = [{ name = "Your Name", email = "you@example.com" }]
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "crewai[tools]==1.8.1"
+    "beautifulsoup4>=4.12.0",
+    "crewai[tools]==1.8.1",
+    "feedparser>=6.0.0",
+    "lxml>=4.9.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "yfinance>=0.2.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+    "pytest>=7.0.0",
 ]
 
 [project.scripts]
-latest_ai_development = "latest_ai_development.main:run"
-run_crew = "latest_ai_development.main:run"
-train = "latest_ai_development.main:train"
-replay = "latest_ai_development.main:replay"
-test = "latest_ai_development.main:test"
-run_with_trigger = "latest_ai_development.main:run_with_trigger"
+crewai_invest_reporter = "crewai_invest_reporter.main:run"
+run_crew = "crewai_invest_reporter.main:run"
+train = "crewai_invest_reporter.main:train"
+replay = "crewai_invest_reporter.main:replay"
+test = "crewai_invest_reporter.main:test"
+run_with_trigger = "crewai_invest_reporter.main:run_with_trigger"
 
 [build-system]
 requires = ["hatchling"]
@@ -22,3 +34,15 @@ build-backend = "hatchling.build"
 
 [tool.crewai]
 type = "crew"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [".venv", "dist", "build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

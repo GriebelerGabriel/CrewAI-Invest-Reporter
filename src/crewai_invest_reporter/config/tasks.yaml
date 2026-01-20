@@ -1,17 +1,51 @@
-research_task:
+news_collection_task:
   description: >
-    Conduct a thorough research about {topic}
-    Make sure you find any interesting and relevant information given
-    the current year is {current_year}.
+    Gather recent and relevant news about the stock {ticker}. Use the news_search tool.
+    Focus on reputable sources (major newspapers, financial portals, regulatory filings, and
+    recognized industry outlets). Collect at least 10 items with title, source, published date,
+    and URL. Include key sector and macro news that impacts {ticker}.
+    Exclude low-signal content such as: "quanto ganharia/quanto renderia", "se tivesse investido",
+    simulators, generic "cotação hoje" recaps, and purely educational content not tied to a material event.
+    Prioritize items that can materially change valuation or risk: earnings/results, guidance,
+    dividends, capital raises, M&A, regulatory actions, credit/events, lawsuits, major contracts,
+    strategic shifts, and relevant sector/macro developments.
   expected_output: >
-    A list with 10 bullet points of the most relevant information about {topic}
-  agent: researcher
+    A structured list (or JSON-like text) of at least 10 news items with title, source,
+    published, url. Do not hallucinate; only include items returned by the tool.
+  agent: news_researcher
 
-reporting_task:
+news_synthesis_task:
   description: >
-    Review the context you got and expand each topic into a full section for a report.
-    Make sure the report is detailed and contains any and all relevant information.
+    Using the collected news context for {ticker}, synthesize the main themes.
+    Extract: (1) key catalysts, (2) key risks, (3) sentiment (positive/neutral/negative)
+    with justification, and (4) what to watch in the next 30-90 days.
   expected_output: >
-    A fully fledged report with the main topics, each with a full section of information.
-    Formatted as markdown without '```'
-  agent: reporting_analyst
+    A concise synthesis with sections: Themes, Catalysts, Risks, Sentiment, Watchlist.
+  agent: news_synthesizer
+
+fundamentals_task:
+  description: >
+    Fetch fundamentals and market data for {ticker} using the stock_fundamentals tool.
+    Provide a readable summary of valuation and quality indicators and recent market behavior.
+  expected_output: >
+    A structured summary of fundamentals and price metrics, plus a short interpretation.
+  agent: fundamentals_analyst
+
+investment_rating_task:
+  description: >
+    Combine the news synthesis and the fundamentals/market data for {ticker}.
+    Produce a final investment status category:
+    - Excellent to invest
+    - Good to invest
+    - Neutral / Watch
+    - Bad to invest
+    Then justify the rating with evidence from (a) news, (b) fundamentals, and (c) market data.
+    Add a section with key risks and what data could change the rating.
+    Add a section "Risco do Investimento (estimativa)" with two percentages that sum to 100:
+    (1) probabilidade de ser um bom investimento e (2) probabilidade de perder dinheiro, com 1-2 linhas de justificativa.
+    IMPORTANT: Write the full report in Brazilian Portuguese (pt-BR) and keep all section titles in pt-BR.
+  expected_output: >
+    Um relatório em markdown (sem '```') escrito em português (pt-BR) incluindo:
+    Resumo Executivo, Resumo de Notícias, Fundamentos & Dados de Mercado, Classificação (com categoria),
+    Risco do Investimento (estimativa), Justificativa, Riscos, e O Que Mudaria Minha Opinião.
+  agent: investment_rater
