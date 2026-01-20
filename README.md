@@ -37,7 +37,7 @@ $ crewai run
 
 This command initializes the latest-ai-development Crew, assembling the agents and assigning them tasks as defined in your configuration.
 
-This example, unmodified, will run the create a `report.md` file with the output of a research on LLMs in the root folder.
+This project generates an investment report per ticker under the `reports/` folder.
 
 ## Understanding Your Crew
 

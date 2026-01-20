@@ -72,7 +72,7 @@ class InvestReporter:
     def investment_rating_task(self) -> Task:
         return Task(
             config=self.tasks_config["investment_rating_task"],  # type: ignore[index]
-            output_file="investment_report.md",
+            output_file="reports/{ticker}_investment_report.md",
         )
 
     @crew

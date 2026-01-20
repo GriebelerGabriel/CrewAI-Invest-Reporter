@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import os
 import sys
 import warnings
 from datetime import datetime
@@ -25,6 +26,7 @@ def run():
     inputs = {"ticker": ticker, "current_year": str(datetime.now().year)}
 
     try:
+        os.makedirs("reports", exist_ok=True)
         InvestReporter().crew().kickoff(inputs=inputs)
     except Exception as e:
         raise Exception(f"An error occurred while running the crew: {e}") from e
@@ -37,6 +39,7 @@ def train():
     ticker = sys.argv[3] if len(sys.argv) > 3 else "PETR4"
     inputs = {"ticker": ticker, "current_year": str(datetime.now().year)}
     try:
+        os.makedirs("reports", exist_ok=True)
         InvestReporter().crew().train(
             n_iterations=int(sys.argv[1]), filename=sys.argv[2], inputs=inputs
         )
@@ -64,6 +67,7 @@ def test():
     inputs = {"ticker": ticker, "current_year": str(datetime.now().year)}
 
     try:
+        os.makedirs("reports", exist_ok=True)
         InvestReporter().crew().test(
             n_iterations=int(sys.argv[1]), eval_llm=sys.argv[2], inputs=inputs
         )
@@ -89,6 +93,7 @@ def run_with_trigger():
     inputs = {"crewai_trigger_payload": trigger_payload, "ticker": "", "current_year": ""}
 
     try:
+        os.makedirs("reports", exist_ok=True)
         result = InvestReporter().crew().kickoff(inputs=inputs)
         return result
     except Exception as e:
