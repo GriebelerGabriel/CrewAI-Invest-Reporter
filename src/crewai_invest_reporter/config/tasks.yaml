@@ -27,6 +27,9 @@ fundamentals_task:
   description: >
     Fetch fundamentals and market data for {ticker} using the stock_fundamentals tool.
     Provide a readable summary of valuation and quality indicators and recent market behavior.
+    IMPORTANT: Never invent or estimate any numeric value. Only use numbers explicitly returned
+    by the stock_fundamentals tool output. If a metric is missing or unavailable, write "Não disponível"
+    and do not replace it with an approximation.
   expected_output: >
     A structured summary of fundamentals and price metrics, plus a short interpretation.
   agent: fundamentals_analyst
@@ -44,6 +47,9 @@ investment_rating_task:
     Add a section "Risco do Investimento (estimativa)" with two percentages that sum to 100:
     (1) probabilidade de ser um bom investimento e (2) probabilidade de perder dinheiro, com 1-2 linhas de justificativa.
     IMPORTANT: Write the full report in Brazilian Portuguese (pt-BR) and keep all section titles in pt-BR.
+    IMPORTANT: Do not invent, guess, or extrapolate any fundamentals/market numbers. Only use numeric
+    values explicitly present in the previous tasks/tool outputs. If a number is not available, state
+    "Não disponível".
   expected_output: >
     Um relatório em markdown (sem '```') escrito em português (pt-BR) incluindo:
     Resumo Executivo, Resumo de Notícias, Fundamentos & Dados de Mercado, Classificação (com categoria),

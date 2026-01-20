@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+import json
+import re
 import unicodedata
 
 import requests
@@ -25,23 +27,25 @@ class StockFundamentalsTool(BaseTool):
     args_schema: type[BaseModel] = StockFundamentalsToolInput
 
     def _run(self, ticker: str) -> str:
-        statusinvest_data, statusinvest_error = self._fetch_statusinvest(ticker=ticker)
+        investidor10_data, investidor10_error = self._fetch_investidor10(ticker=ticker)
 
         combined = {
             "input_ticker": ticker,
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
-            "source": {"statusinvest": {"data": statusinvest_data, "error": statusinvest_error}},
-            "fundamentals": (statusinvest_data or {}).get("mapped") or {},
+            "source": {"investidor10": {"data": investidor10_data, "error": investidor10_error}},
+            "fundamentals": (investidor10_data or {}).get("mapped") or {},
         }
         return str(combined)
 
-    def _fetch_statusinvest(self, ticker: str) -> tuple[dict[str, Any] | None, str | None]:
+    def _fetch_investidor10(self, ticker: str) -> tuple[dict[str, Any] | None, str | None]:
         papel = ticker.replace(".SA", "").upper()
         if not papel.isalnum():
-            return None, "statusinvest supports only alphanumeric tickers"
+            return None, "investidor10 supports only alphanumeric tickers"
 
-        paths = ["fundos-imobiliarios", "fiagros"] if papel.endswith("11") else ["acoes"]
-        urls = [f"https://statusinvest.com.br/{path}/{papel.lower()}" for path in paths]
+        base_path = "fiis" if papel.endswith("11") else "acoes"
+        urls = [
+            f"https://investidor10.com.br/{base_path}/{papel.lower()}/",
+        ]
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -61,36 +65,7 @@ class StockFundamentalsTool(BaseTool):
                 if candidate_resp.status_code != 200:
                     continue
 
-                candidate_soup = BeautifulSoup(candidate_resp.text, "lxml")
-                candidate_raw = {
-                    "P/L": self._statusinvest_get_indicator_any(candidate_soup, ["P/L", "P / L"]),
-                    "P/VP": self._statusinvest_get_indicator_any(candidate_soup, ["P/VP", "P/VPA", "P / VP", "P / VPA"]),
-                    "Div. Yield": self._statusinvest_get_indicator_any(
-                        candidate_soup,
-                        ["D.Y", "DY", "Dividend Yield", "Div. Yield", "Div Yield"],
-                    ),
-                    "Dividendo": self._statusinvest_get_indicator_any(
-                        candidate_soup,
-                        ["Dividendo", "Dividendos", "Último dividendo", "Ultimo dividendo"],
-                    ),
-                    "Valor de mercado": self._statusinvest_get_indicator_any(
-                        candidate_soup,
-                        ["Valor de mercado", "Valor de Mercado", "Valor de mercado (R$)", "Market cap", "Market Cap"],
-                    ),
-                    "Liquidez diária": self._statusinvest_get_indicator_any(
-                        candidate_soup,
-                        ["Liquidez diária", "Liquidez diaria", "Liquidez", "Liquidez média diária", "Liquidez media diaria"],
-                    ),
-                    "Patrimônio líquido": self._statusinvest_get_indicator_any(
-                        candidate_soup,
-                        ["Patrimônio líquido", "Patrimonio liquido", "Patrimônio", "Patrimonio"],
-                    ),
-                    "Marg. Líquida": self._statusinvest_get_indicator_any(
-                        candidate_soup,
-                        ["M. Líquida", "M. Liquida", "Margem Líquida", "Margem Liquida"],
-                    ),
-                }
-                candidate_raw = {k: v for k, v in candidate_raw.items() if v}
+                candidate_raw = self._investidor10_extract_from_html(candidate_resp.text)
                 if not candidate_raw:
                     continue
 
@@ -100,31 +75,102 @@ class StockFundamentalsTool(BaseTool):
                 break
 
             if resp is None or url is None:
-                return None, f"statusinvest http status={last_status}"
+                return None, f"investidor10 http status={last_status}"
 
             if not raw:
-                return None, "statusinvest parse error: empty extracted data"
+                return None, "investidor10 parse error: empty extracted data"
 
             mapped = {
                 "source_url": url,
                 "papel": papel,
                 "raw": raw,
                 "mapped": {
+                    "currentPrice": self._to_float(raw.get("Preço")),
                     "trailingPE": self._to_float(raw.get("P/L")),
                     "priceToBook": self._to_float(raw.get("P/VP")),
-                    "dividendYield": self._to_percent(raw.get("Div. Yield")),
-                    "lastDividend": self._to_float(raw.get("Dividendo")),
-                    "marketCap": self._to_int(raw.get("Valor de mercado")),
-                    "averageDailyLiquidity": self._to_int(raw.get("Liquidez diária")),
-                    "netAssets": self._to_int(raw.get("Patrimônio líquido")),
-                    "profitMargins": self._to_percent(raw.get("Marg. Líquida")),
+                    "dividendYield": self._to_percent(raw.get("Dividend Yield")),
+                    "dividendsLast12m": self._to_float(raw.get("Dividendos (12m)")),
                     "beta": None,
                 },
             }
 
             return mapped, None
         except Exception as e:
-            return None, f"statusinvest request/parse failed: {e}"
+            return None, f"investidor10 request/parse failed: {e}"
+
+    def _investidor10_extract_from_html(self, html: str) -> dict[str, str]:
+        soup = BeautifulSoup(html, "lxml")
+        raw: dict[str, str] = {}
+
+        faq_texts: list[str] = []
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            txt = script.get_text(strip=True)
+            if not txt:
+                continue
+            try:
+                data = json.loads(txt)
+            except Exception:
+                continue
+
+            objs: list[dict[str, Any]] = []
+            if isinstance(data, dict):
+                objs.append(data)
+            elif isinstance(data, list):
+                objs.extend([o for o in data if isinstance(o, dict)])
+
+            for obj in objs:
+                if obj.get("@type") != "FAQPage":
+                    continue
+                for q in obj.get("mainEntity", []) or []:
+                    if not isinstance(q, dict):
+                        continue
+                    ans = q.get("acceptedAnswer")
+                    if not isinstance(ans, dict):
+                        continue
+                    t = ans.get("text")
+                    if isinstance(t, str) and t.strip():
+                        faq_texts.append(t)
+
+        page_text = soup.get_text("\n", strip=True)
+        combined = "\n".join(faq_texts) + "\n" + page_text if faq_texts else page_text
+
+        def get_currency(label: str, pattern: str) -> None:
+            m = re.search(pattern, combined, flags=re.IGNORECASE | re.DOTALL)
+            if m:
+                raw[label] = m.group(1).strip()
+
+        def get_number(label: str, pattern: str) -> None:
+            m = re.search(pattern, combined, flags=re.IGNORECASE | re.DOTALL)
+            if m:
+                raw[label] = m.group(1).strip()
+
+        def get_percent(label: str, pattern: str) -> None:
+            m = re.search(pattern, combined, flags=re.IGNORECASE | re.DOTALL)
+            if m:
+                raw[label] = m.group(1).strip() + "%"
+
+        get_currency("Preço", r"está cotad[oa]\s+a\s+R\$\s*([0-9\.]+,[0-9]{2})")
+        get_percent(
+            "Variação (12M)",
+            r"variaç[aã]o\s+de\s*([\-\+]?[0-9\.]+,[0-9]{1,2}|[\-\+]?[0-9\.]+)\s*%",
+        )
+        get_number("P/L", r"P\s*/\s*L\s+de\s*([0-9\.]+,[0-9]{1,2}|[0-9\.]+)")
+        get_number("P/VP", r"P\s*/\s*VP\s+de\s*([0-9\.]+,[0-9]{1,2}|[0-9\.]+)")
+        get_percent("Dividend Yield", r"Dividend\s*Yield[^0-9%]*([0-9\.]+,[0-9]{1,2}|[0-9\.]+)\s*%")
+        get_currency(
+            "Dividendos (12m)",
+            r"Nos\s+últimos\s+12\s+meses,\s+distribuiu\s+um\s+total\s+de\s*R\$\s*([0-9\.]+,[0-9]{2})",
+        )
+        mliq = re.search(
+            r"Liquidez\s*Di[áa]ria\s*R\$\s*([0-9\.]+,[0-9]{2})\s*([MK])",
+            combined,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if mliq:
+            raw["Liquidez Diária"] = f"R$ {mliq.group(1)} {mliq.group(2)}"
+
+        raw = {k: v for k, v in raw.items() if v}
+        return raw
 
     def _statusinvest_get_indicator(self, soup: BeautifulSoup, title: str) -> str | None:
         def _norm(s: str) -> str:
