@@ -1,133 +1,47 @@
 from __future__ import annotations
 
-import math
-import time
 from datetime import datetime, timezone
 from typing import Any
+import unicodedata
 
 import requests
-import yfinance as yf
 from bs4 import BeautifulSoup
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
-_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_CACHE: dict[str, dict[str, Any]] = {}
 
 
 class StockFundamentalsToolInput(BaseModel):
     ticker: str = Field(..., description="Stock ticker. For B3, you can pass PETR4 or PETR4.SA")
-    period: str = Field("1y", description="Price history period (e.g. 6mo, 1y, 5y)")
 
 
 class StockFundamentalsTool(BaseTool):
     name: str = "stock_fundamentals"
     description: str = (
-        "Fetch stock fundamentals and recent market data using yfinance. "
-        "Returns key fundamentals (if available) and price-based metrics (returns, volatility)."
+        "Fetch stock fundamentals from StatusInvest. "
+        "Returns key fundamentals (if available)."
     )
     args_schema: type[BaseModel] = StockFundamentalsToolInput
 
-    def _run(self, ticker: str, period: str = "1y") -> str:
-        cache_key = (ticker, period)
-        if cache_key in _CACHE:
-            return str(_CACHE[cache_key])
-
-        yf_ticker = self._to_yfinance_ticker(ticker)
-        yfinance_data, yfinance_error = self._fetch_yfinance(yf_ticker=yf_ticker, period=period)
-
-        fundamentus_data, fundamentus_error = self._fetch_fundamentus(ticker=ticker)
+    def _run(self, ticker: str) -> str:
+        statusinvest_data, statusinvest_error = self._fetch_statusinvest(ticker=ticker)
 
         combined = {
             "input_ticker": ticker,
-            "yfinance_ticker": yf_ticker,
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
-            "sources": {
-                "yfinance": {"data": yfinance_data, "error": yfinance_error},
-                "fundamentus": {"data": fundamentus_data, "error": fundamentus_error},
-            },
-            "best_effort": {
-                "fundamentals": self._merge_best_effort_fundamentals(
-                    yfinance_data, fundamentus_data
-                ),
-                "price_metrics": (yfinance_data or {}).get("price_metrics", {}),
-            },
-            "discrepancies": self._find_discrepancies(yfinance_data, fundamentus_data),
+            "source": {"statusinvest": {"data": statusinvest_data, "error": statusinvest_error}},
+            "fundamentals": (statusinvest_data or {}).get("mapped") or {},
         }
-
-        _CACHE[cache_key] = combined
         return str(combined)
 
-    def _to_yfinance_ticker(self, ticker: str) -> str:
-        yf_ticker = ticker
-        if yf_ticker.isalnum() and len(yf_ticker) <= 6 and not yf_ticker.endswith(".SA"):
-            yf_ticker = f"{yf_ticker}.SA"
-        return yf_ticker
-
-    def _fetch_yfinance(
-        self, yf_ticker: str, period: str
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        last_error: str | None = None
-
-        for attempt in range(1, 4):
-            try:
-                t = yf.Ticker(yf_ticker)
-
-                info: dict[str, Any]
-                try:
-                    info = t.get_info() or {}
-                except Exception as e:
-                    info = {}
-                    last_error = f"yfinance get_info error: {e}"
-
-                hist = t.history(period=period)
-                close = hist["Close"] if "Close" in hist.columns else None
-
-                price_metrics: dict[str, Any] = {}
-                if close is not None and len(close) >= 2:
-                    first = float(close.iloc[0])
-                    last = float(close.iloc[-1])
-                    total_return = (last / first) - 1 if first != 0 else None
-
-                    daily_ret = close.pct_change().dropna()
-                    vol = float(daily_ret.std()) * math.sqrt(252) if len(daily_ret) > 2 else None
-
-                    price_metrics = {
-                        "period": period,
-                        "first_close": first,
-                        "last_close": last,
-                        "total_return": total_return,
-                        "annualized_volatility": vol,
-                    }
-
-                fundamentals = {
-                    "symbol": info.get("symbol", yf_ticker),
-                    "shortName": info.get("shortName"),
-                    "sector": info.get("sector"),
-                    "industry": info.get("industry"),
-                    "country": info.get("country"),
-                    "currency": info.get("currency"),
-                    "marketCap": info.get("marketCap"),
-                    "trailingPE": info.get("trailingPE"),
-                    "forwardPE": info.get("forwardPE"),
-                    "priceToBook": info.get("priceToBook"),
-                    "dividendYield": info.get("dividendYield"),
-                    "profitMargins": info.get("profitMargins"),
-                    "beta": info.get("beta"),
-                }
-
-                return {"fundamentals": fundamentals, "price_metrics": price_metrics}, last_error
-            except Exception as e:
-                last_error = f"yfinance request failed (attempt {attempt}): {e}"
-                time.sleep(1.5 * attempt)
-
-        return None, last_error
-
-    def _fetch_fundamentus(self, ticker: str) -> tuple[dict[str, Any] | None, str | None]:
+    def _fetch_statusinvest(self, ticker: str) -> tuple[dict[str, Any] | None, str | None]:
         papel = ticker.replace(".SA", "").upper()
         if not papel.isalnum():
-            return None, "fundamentus supports only alphanumeric tickers"
+            return None, "statusinvest supports only alphanumeric tickers"
 
-        url = f"https://fundamentus.com.br/detalhes.php?papel={papel}"
+        paths = ["fundos-imobiliarios", "fiagros"] if papel.endswith("11") else ["acoes"]
+        urls = [f"https://statusinvest.com.br/{path}/{papel.lower()}" for path in paths]
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -137,18 +51,59 @@ class StockFundamentalsTool(BaseTool):
         }
 
         try:
-            resp = requests.get(url, headers=headers, timeout=15)
-            if resp.status_code != 200:
-                return None, f"fundamentus http status={resp.status_code}"
+            resp = None
+            url = None
+            raw = None
+            last_status = None
+            for candidate_url in urls:
+                candidate_resp = requests.get(candidate_url, headers=headers, timeout=15)
+                last_status = candidate_resp.status_code
+                if candidate_resp.status_code != 200:
+                    continue
 
-            soup = BeautifulSoup(resp.text, "lxml")
-            tables = soup.find_all("table")
-            if not tables:
-                return None, "fundamentus parse error: no tables found"
+                candidate_soup = BeautifulSoup(candidate_resp.text, "lxml")
+                candidate_raw = {
+                    "P/L": self._statusinvest_get_indicator_any(candidate_soup, ["P/L", "P / L"]),
+                    "P/VP": self._statusinvest_get_indicator_any(candidate_soup, ["P/VP", "P/VPA", "P / VP", "P / VPA"]),
+                    "Div. Yield": self._statusinvest_get_indicator_any(
+                        candidate_soup,
+                        ["D.Y", "DY", "Dividend Yield", "Div. Yield", "Div Yield"],
+                    ),
+                    "Dividendo": self._statusinvest_get_indicator_any(
+                        candidate_soup,
+                        ["Dividendo", "Dividendos", "Último dividendo", "Ultimo dividendo"],
+                    ),
+                    "Valor de mercado": self._statusinvest_get_indicator_any(
+                        candidate_soup,
+                        ["Valor de mercado", "Valor de Mercado", "Valor de mercado (R$)", "Market cap", "Market Cap"],
+                    ),
+                    "Liquidez diária": self._statusinvest_get_indicator_any(
+                        candidate_soup,
+                        ["Liquidez diária", "Liquidez diaria", "Liquidez", "Liquidez média diária", "Liquidez media diaria"],
+                    ),
+                    "Patrimônio líquido": self._statusinvest_get_indicator_any(
+                        candidate_soup,
+                        ["Patrimônio líquido", "Patrimonio liquido", "Patrimônio", "Patrimonio"],
+                    ),
+                    "Marg. Líquida": self._statusinvest_get_indicator_any(
+                        candidate_soup,
+                        ["M. Líquida", "M. Liquida", "Margem Líquida", "Margem Liquida"],
+                    ),
+                }
+                candidate_raw = {k: v for k, v in candidate_raw.items() if v}
+                if not candidate_raw:
+                    continue
 
-            raw = self._parse_label_value_tables(soup)
+                resp = candidate_resp
+                url = candidate_url
+                raw = candidate_raw
+                break
+
+            if resp is None or url is None:
+                return None, f"statusinvest http status={last_status}"
+
             if not raw:
-                return None, "fundamentus parse error: empty extracted data"
+                return None, "statusinvest parse error: empty extracted data"
 
             mapped = {
                 "source_url": url,
@@ -158,7 +113,10 @@ class StockFundamentalsTool(BaseTool):
                     "trailingPE": self._to_float(raw.get("P/L")),
                     "priceToBook": self._to_float(raw.get("P/VP")),
                     "dividendYield": self._to_percent(raw.get("Div. Yield")),
+                    "lastDividend": self._to_float(raw.get("Dividendo")),
                     "marketCap": self._to_int(raw.get("Valor de mercado")),
+                    "averageDailyLiquidity": self._to_int(raw.get("Liquidez diária")),
+                    "netAssets": self._to_int(raw.get("Patrimônio líquido")),
                     "profitMargins": self._to_percent(raw.get("Marg. Líquida")),
                     "beta": None,
                 },
@@ -166,21 +124,53 @@ class StockFundamentalsTool(BaseTool):
 
             return mapped, None
         except Exception as e:
-            return None, f"fundamentus request/parse failed: {e}"
+            return None, f"statusinvest request/parse failed: {e}"
 
-    def _parse_label_value_tables(self, soup: BeautifulSoup) -> dict[str, str]:
-        data: dict[str, str] = {}
-        for td in soup.find_all("td"):
-            cls = td.get("class") or []
-            if "label" in cls:
-                label = td.get_text(strip=True)
-                val_td = td.find_next_sibling("td")
-                if val_td is None:
-                    continue
-                val = val_td.get_text(" ", strip=True)
-                if label and val:
-                    data[label] = val
-        return data
+    def _statusinvest_get_indicator(self, soup: BeautifulSoup, title: str) -> str | None:
+        def _norm(s: str) -> str:
+            s2 = unicodedata.normalize("NFKD", s)
+            s2 = "".join(ch for ch in s2 if not unicodedata.combining(ch))
+            s2 = s2.lower().strip()
+            s2 = "".join(ch for ch in s2 if ch.isalnum())
+            return s2
+
+        wanted = _norm(title)
+        h3 = None
+        for tag in soup.find_all("h3"):
+            txt = tag.get_text(" ", strip=True)
+            if not txt:
+                continue
+            got = _norm(txt)
+            if got == wanted or got.startswith(wanted):
+                h3 = tag
+                break
+        if h3 is None:
+            return None
+
+        item = h3.find_parent("div", class_="item")
+        if item is not None:
+            val = item.find(class_=lambda c: c and "value" in c.split())
+            if val is not None:
+                out = val.get_text(" ", strip=True)
+                return out or None
+
+        container = h3.parent
+        if container is None:
+            return None
+
+        val2 = container.find_next(class_=lambda c: c and "value" in c.split())
+        if val2 is None:
+            return None
+
+        out2 = val2.get_text(" ", strip=True)
+        return out2 or None
+
+    def _statusinvest_get_indicator_any(self, soup: BeautifulSoup, titles: list[str]) -> str | None:
+        for title in titles:
+            out = self._statusinvest_get_indicator(soup, title)
+            if out:
+                return out
+        return None
 
     def _to_float(self, s: str | None) -> float | None:
         if not s:
@@ -212,41 +202,3 @@ class StockFundamentalsTool(BaseTool):
             return int(val)
         except Exception:
             return None
-
-    def _merge_best_effort_fundamentals(
-        self,
-        yfinance_data: dict[str, Any] | None,
-        fundamentus_data: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        yf_fund = (yfinance_data or {}).get("fundamentals", {})
-        f_map = (fundamentus_data or {}).get("mapped") or {}
-        merged = dict(yf_fund)
-
-        for k, v in f_map.items():
-            if merged.get(k) is None and v is not None:
-                merged[k] = v
-
-        return merged
-
-    def _find_discrepancies(
-        self,
-        yfinance_data: dict[str, Any] | None,
-        fundamentus_data: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        yf_fund = (yfinance_data or {}).get("fundamentals", {})
-        f_map = (fundamentus_data or {}).get("mapped") or {}
-
-        fields = ["trailingPE", "priceToBook", "dividendYield", "marketCap", "profitMargins"]
-        out: dict[str, Any] = {}
-        for field in fields:
-            a = yf_fund.get(field)
-            b = f_map.get(field)
-            if a is None or b is None:
-                continue
-            try:
-                delta = abs(float(a) - float(b))
-            except Exception:
-                continue
-            if delta != 0:
-                out[field] = {"yfinance": a, "fundamentus": b, "abs_delta": delta}
-        return out
