@@ -1,54 +1,155 @@
-# LatestAiDevelopment Crew
+# CrewAI Invest Reporter
 
-Welcome to the LatestAiDevelopment Crew project, powered by [crewAI](https://crewai.com). This template is designed to help you set up a multi-agent AI system with ease, leveraging the powerful and flexible framework provided by crewAI. Our goal is to enable your agents to collaborate effectively on complex tasks, maximizing their collective intelligence and capabilities.
+Generate an **investment report (pt-BR)** for a given Brazilian stock ticker (B3), combining:
+
+- **Recent news headlines** (Google News RSS)
+- **Fundamentals + market data** (best-effort merge of `yfinance` and Fundamentus)
+- A final **investment rating** with risks and what could change the view
+
+Reports are written to `reports/<TICKER>_investment_report.md`.
+
+## What the application does
+
+Given a ticker like `PETR4` or `BBDC3`, the crew:
+
+1. Collects recent news items related to the company/ticker
+2. Synthesizes the news into themes, catalysts, risks, sentiment, and a watchlist
+3. Fetches fundamentals and market/price metrics
+4. Produces a final investment classification and a full markdown report (pt-BR)
+
+## Architecture
+
+### Flow diagram
+
+![CrewAI Invest Reporter flow](assets/flow.svg)
+
+### Agents
+
+Agents are defined in `src/crewai_invest_reporter/config/agents.yaml`.
+
+- **`news_researcher`**
+  - **Role**: Financial News Researcher
+  - **Goal**: collect relevant and trustworthy news for `{ticker}`
+  - **Tooling**: uses the `news_search` tool
+
+- **`news_synthesizer`**
+  - **Role**: News Synthesizer & Risk Analyst
+  - **Goal**: turn the news list into themes, catalysts, risks, sentiment, watchlist
+
+- **`fundamentals_analyst`**
+  - **Role**: Fundamental & Market Data Analyst
+  - **Goal**: fetch fundamentals + market metrics for `{ticker}`
+  - **Tooling**: uses the `stock_fundamentals` tool
+
+- **`investment_rater`**
+  - **Role**: Investment Decision Analyst
+  - **Goal**: combine news + fundamentals to issue a final rating and produce the report
+
+### Tasks / Flow
+
+Tasks are defined in `src/crewai_invest_reporter/config/tasks.yaml` and run **sequentially**:
+
+1. **`news_collection_task`** (agent: `news_researcher`)
+   - Uses `news_search` to return a list of items with:
+     - `title`, `source`, `published`, `url`
+
+2. **`news_synthesis_task`** (agent: `news_synthesizer`)
+   - Synthesizes the news list into:
+     - Themes, Catalysts, Risks, Sentiment, Watchlist
+
+3. **`fundamentals_task`** (agent: `fundamentals_analyst`)
+   - Uses `stock_fundamentals` to fetch best-effort metrics from:
+     - `yfinance`
+     - Fundamentus (scraped)
+
+4. **`investment_rating_task`** (agent: `investment_rater`)
+   - Produces the final report in **Brazilian Portuguese (pt-BR)** and saves it to:
+     - `reports/{ticker}_investment_report.md`
+
+### Tools
+
+Tools live in `src/crewai_invest_reporter/tools/`.
+
+- **`news_search`** (`NewsSearchTool`)
+  - Source: Google News RSS
+  - Output: a structured list with *headline metadata only* (it does **not** download full article text)
+
+- **`stock_fundamentals`** (`StockFundamentalsTool`)
+  - Sources: `yfinance` + Fundamentus (best-effort merge)
+  - Output: fundamentals + price metrics and discrepancy hints
+
+## Requirements
+
+- Python `>=3.10,<3.14`
+
+## Environment variables (`.env`)
+
+Create a `.env` file in the repository root.
+
+Example:
+
+```bash
+# Required if you are using OpenAI models
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Optional (depends on your CrewAI configuration / provider)
+# OPENAI_MODEL=gpt-4o-mini
+```
+
+Notes:
+
+- Never commit your `.env`.
+- If you switch to a local model/provider, the required variables may change.
 
 ## Installation
 
-Ensure you have Python >=3.10 <3.14 installed on your system. This project uses [UV](https://docs.astral.sh/uv/) for dependency management and package handling, offering a seamless setup and execution experience.
-
-First, if you haven't already, install uv:
+### Option A: Using `uv` (recommended)
 
 ```bash
 pip install uv
+uv sync
 ```
 
-Next, navigate to your project directory and install the dependencies:
-
-(Optional) Lock the dependencies and install them by using the CLI command:
-```bash
-crewai install
-```
-### Customizing
-
-**Add your `OPENAI_API_KEY` into the `.env` file**
-
-- Modify `src/latest_ai_development/config/agents.yaml` to define your agents
-- Modify `src/latest_ai_development/config/tasks.yaml` to define your tasks
-- Modify `src/latest_ai_development/crew.py` to add your own logic, tools and specific args
-- Modify `src/latest_ai_development/main.py` to add custom inputs for your agents and tasks
-
-## Running the Project
-
-To kickstart your crew of AI agents and begin task execution, run this from the root folder of your project:
+### Option B: Using `pip`
 
 ```bash
-$ crewai run
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
 ```
 
-This command initializes the latest-ai-development Crew, assembling the agents and assigning them tasks as defined in your configuration.
+## Running
 
-This project generates an investment report per ticker under the `reports/` folder.
+### Run from Python (simple)
 
-## Understanding Your Crew
+Run the crew for a given ticker:
 
-The latest-ai-development Crew is composed of multiple AI agents, each with unique roles, goals, and tools. These agents collaborate on a series of tasks, defined in `config/tasks.yaml`, leveraging their collective skills to achieve complex objectives. The `config/agents.yaml` file outlines the capabilities and configurations of each agent in your crew.
+```bash
+python -m crewai_invest_reporter.main PETR4
+```
 
-## Support
+Example:
 
-For support, questions, or feedback regarding the LatestAiDevelopment Crew or crewAI.
-- Visit our [documentation](https://docs.crewai.com)
-- Reach out to us through our [GitHub repository](https://github.com/joaomdmoura/crewai)
-- [Join our Discord](https://discord.com/invite/X4JWnZnxPb)
-- [Chat with our docs](https://chatg.pt/DWjSBZn)
+```bash
+python -m crewai_invest_reporter.main BBDC3
+```
 
-Let's create wonders together with the power and simplicity of crewAI.
+### Output
+
+After running, you will find the report at:
+
+- `reports/PETR4_investment_report.md`
+- `reports/BBDC3_investment_report.md`
+
+## Customization
+
+- **Agents**: `src/crewai_invest_reporter/config/agents.yaml`
+- **Tasks and report structure**: `src/crewai_invest_reporter/config/tasks.yaml`
+- **Tools**:
+  - `src/crewai_invest_reporter/tools/news_search_tool.py`
+  - `src/crewai_invest_reporter/tools/stock_fundamentals_tool.py`
+
+## Limitations
+
+- The news pipeline is based on **headlines** (title/source/date/url). It can miss important details that are only present in the full article text.
+- Fundamentus scraping may fail due to site changes/rate limits; the tool is best-effort and reports errors in the returned payload.
