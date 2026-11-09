@@ -35,19 +35,15 @@ def test_reads_html_without_scripts_and_navigation():
         body="<html><nav>menu</nav><script>x()</script><p>Lucro de R$ 10 bi</p></html>",
         content_type="text/html",
     )
-    document = _reader().read("https://ri.example.com/release")
-    assert document.content_type == "text/html"
-    assert document.text == "Lucro de R$ 10 bi"
+    assert _reader().read("https://ri.example.com/release") == "Lucro de R$ 10 bi"
 
 
 @responses.activate
 def test_detects_pdf_by_magic_bytes_even_with_wrong_content_type():
     # CVM's RAD serves PDFs as text/html.
     responses.get("https://rad.example.com/doc", body=_blank_pdf(3), content_type="text/html")
-    document = _reader().read("https://rad.example.com/doc")
-    assert document.content_type == "application/pdf"
-    assert document.pages == 3
-    assert "[página 3]" in document.text
+    text = _reader().read("https://rad.example.com/doc")
+    assert "[página 1]" in text and "[página 3]" in text
 
 
 @responses.activate
@@ -57,7 +53,7 @@ def test_reads_xml_documents():
         body='<?xml version="1.0"?><Informe><DY>1,1</DY></Informe>',
         content_type="text/xml",
     )
-    assert _reader().read("https://fnet.example.com/doc").text == "1,1"
+    assert _reader().read("https://fnet.example.com/doc") == "1,1"
 
 
 @pytest.mark.parametrize(

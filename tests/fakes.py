@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from crewai_invest_reporter.domain.models import Document, Filing, Fundamentals, NewsItem
+from crewai_invest_reporter.domain.models import Filing, Fundamentals, NewsItem
 
 
 class FakeFilings:
@@ -38,15 +38,14 @@ class FakeDocuments:
         self.calls.append(url)
         if self.error:
             raise self.error
-        text = self.text if self.text is not None else f"conteúdo de {url} " * self.words
-        return Document(url=url, content_type="application/pdf", text=text, pages=3)
+        return self.text if self.text is not None else f"conteúdo de {url} " * self.words
 
 
 class FakeNews:
     def __init__(self, items=None, error=None):
         self.items, self.error, self.calls = items, error, []
 
-    def search(self, query, *, max_results=10, days=30, language="pt-BR", region="BR"):
+    def search(self, query, *, max_results=10, days=30):
         self.calls.append((query, max_results, days))
         if self.error:
             raise self.error

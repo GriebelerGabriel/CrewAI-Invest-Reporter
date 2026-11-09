@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date
 from typing import Any, Literal
@@ -10,8 +9,8 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai.project import CrewBase, agent, crew, task
 from pydantic import BaseModel, Field
 
+from crewai_invest_reporter.crews import strip_code_fence, to_json
 from crewai_invest_reporter.domain.models import Analysis, ResearchDossier, Verdict
-from crewai_invest_reporter.services.report_writer import strip_code_fence
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +24,8 @@ class VerdictRecord(BaseModel):
     confidence: Literal["alta", "média", "baixa"]
 
 
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=1)
-
-
-def asset_report_inputs(dossier: ResearchDossier, today: date | None = None) -> dict[str, str]:
+def asset_report_inputs(dossier: ResearchDossier, today: date) -> dict[str, str]:
     """Flatten a dossier into the prompt variables used by config/tasks.yaml."""
-    today = today or date.today()
     stock = dossier.stock
     data = dossier.to_dict()
     return {
@@ -39,12 +33,12 @@ def asset_report_inputs(dossier: ResearchDossier, today: date | None = None) -> 
         "company": stock.name or stock.ticker,
         "current_year": str(today.year),
         "today": today.isoformat(),
-        "official_documents": _json(
+        "official_documents": to_json(
             {"documents": data["documents"], "other_recent_filings": data["other_recent_filings"]}
         ),
-        "news_items": _json(data["news"]),
-        "fundamentals_data": _json(data["fundamentals"]),
-        "data_gaps": _json(data["data_gaps"]),
+        "news_items": to_json(data["news"]),
+        "fundamentals_data": to_json(data["fundamentals"]),
+        "data_gaps": to_json(data["data_gaps"]),
     }
 
 

@@ -29,10 +29,6 @@ class Stock:
     def display_name(self) -> str:
         return f"{self.ticker} ({self.name})" if self.name else self.ticker
 
-    @property
-    def report_name(self) -> str:
-        return f"{self.ticker}_investment_report"
-
 
 @dataclass(frozen=True)
 class NewsItem:
@@ -57,16 +53,6 @@ class Filing:
         data = asdict(self)
         data["delivered_on"] = self.delivered_on.isoformat()
         return {key: value for key, value in data.items() if value}
-
-
-@dataclass(frozen=True)
-class Document:
-    """Text extracted from a remote document (PDF, HTML, XML or plain text)."""
-
-    url: str
-    content_type: str
-    text: str
-    pages: int | None = None
 
 
 @dataclass(frozen=True)
@@ -168,18 +154,14 @@ class Subscriber:
     email: str
     tickers: tuple[str, ...]
     unsubscribe_token: str
-    confirmed: bool
     confirmation_sent_at: datetime | None = None
-
-
-RATING_CATEGORIES = ("Excellent to invest", "Good to invest", "Neutral / Watch", "Bad to invest")
 
 
 @dataclass(frozen=True)
 class Verdict:
     """The structured conclusion of a full report, as the rating agent stated it."""
 
-    rating: str  # one of RATING_CATEGORIES
+    rating: str  # Excellent to invest / Good to invest / Neutral / Watch / Bad to invest
     probability_good: int  # % chance of being a good investment
     probability_loss: int  # % chance of losing money
     confidence: str  # alta / média / baixa

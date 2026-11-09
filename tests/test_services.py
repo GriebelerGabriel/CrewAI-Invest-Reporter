@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 
+from crewai_invest_reporter.crews import strip_code_fence
 from crewai_invest_reporter.domain.errors import InvalidTickerError, ProviderError
 from crewai_invest_reporter.domain.models import (
     Analysis,
@@ -12,7 +13,7 @@ from crewai_invest_reporter.domain.models import (
     Verdict,
 )
 from crewai_invest_reporter.providers.cvm import RegistryEntry
-from crewai_invest_reporter.services.report_writer import ReportWriter
+from crewai_invest_reporter.providers.database import Database
 from crewai_invest_reporter.services.reporting import AssetReportService
 from crewai_invest_reporter.services.stocks import StockResolver
 
@@ -43,15 +44,12 @@ class FakeCollector:
         return ResearchDossier(stock=stock, fundamentals=fundamentals)
 
 
-class FakeRatings:
-    def __init__(self):
-        self.saved = []
-
-    def save_rating(self, rating):
-        self.saved.append(rating)
+def _ratings(db):
+    with db._connect() as conn:
+        return [dict(row) for row in conn.execute("SELECT * FROM ratings")]
 
 
-def _service(tmp_path, analysis=ANALYSIS, ratings=None, collector=None):
+def _service(tmp_path, analysis=ANALYSIS, collector=None):
     calls = []
 
     def analyze(dossier, today):
@@ -62,47 +60,49 @@ def _service(tmp_path, analysis=ANALYSIS, ratings=None, collector=None):
         analyze=analyze,
         resolve=StockResolver(FakeRegistry()).resolve,
         collector=collector or FakeCollector(),
-        writer=ReportWriter(tmp_path),
-        ratings=ratings,
+        reports_dir=tmp_path / "reports",
+        ratings=Database(tmp_path / "r.db"),
         model="openai/gpt-4.1-mini",
     )
-    return service, calls
+    return service, calls, service._ratings
 
 
-def test_report_writer_strips_code_fence_and_rejects_unsafe_names(tmp_path):
-    writer = ReportWriter(tmp_path / "reports")
-    path = writer.write("PETR4_report", "```markdown\n# Título\n```")
-    assert path.read_text(encoding="utf-8") == "# Título\n"
-    with pytest.raises(ValueError):
-        writer.path_for("../escape")
+def test_strip_code_fence():
+    assert strip_code_fence("```markdown\n# Título\n```") == "# Título"
+    assert strip_code_fence("  # Título  ") == "# Título"
 
 
 def test_generate_writes_the_report_and_saves_the_rating(tmp_path):
-    ratings, collector = FakeRatings(), FakeCollector()
-    service, calls = _service(tmp_path, ratings=ratings, collector=collector)
-    path = service.generate("petr4.sa", today=TODAY)
+    collector = FakeCollector()
+    service, calls, db = _service(tmp_path, collector=collector)
+    path = service.generate("petr4.sa", TODAY)
 
-    assert path == tmp_path / "PETR4_investment_report.md"
+    assert path == tmp_path / "reports" / "PETR4_investment_report.md"
     assert path.read_text(encoding="utf-8") == "# Relatório\n"
     assert calls == [("PETR4", TODAY)]
     assert [s.cnpj for s in collector.stocks] == ["33000167000101"]
-    (rating,) = ratings.saved
-    assert (rating.day, rating.ticker, rating.verdict, rating.price) == (
-        TODAY,
-        "PETR4",
-        VERDICT,
-        38.45,
+    (row,) = _ratings(db)
+    assert row["day"] == "2026-10-17" and row["ticker"] == "PETR4"
+    assert (row["rating"], row["probability_good"], row["probability_loss"]) == (
+        "Good to invest",
+        65,
+        35,
     )
-    assert rating.metrics["trailingPE"] == 4.5
-    assert rating.model == "openai/gpt-4.1-mini"
-    assert rating.report == "# Relatório"
+    assert row["price"] == 38.45 and '"trailingPE": 4.5' in row["metrics"]
+    assert (row["model"], row["report"]) == ("openai/gpt-4.1-mini", "# Relatório")
+
+
+def test_every_run_is_kept(tmp_path):
+    service, _, db = _service(tmp_path)
+    service.generate("PETR4", TODAY)
+    service.generate("PETR4", TODAY)
+    assert len(_ratings(db)) == 2
 
 
 def test_report_without_verdict_is_written_but_not_rated(tmp_path):
-    ratings = FakeRatings()
-    service, _ = _service(tmp_path, analysis=Analysis("# Relatório"), ratings=ratings)
-    assert service.generate("PETR4", today=TODAY).exists()
-    assert ratings.saved == []
+    service, _, db = _service(tmp_path, analysis=Analysis("# Relatório"))
+    assert service.generate("PETR4", TODAY).exists()
+    assert _ratings(db) == []
 
 
 def test_resolver_rejects_invalid_and_unlisted_tickers():

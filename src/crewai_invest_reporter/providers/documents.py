@@ -19,7 +19,6 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 from crewai_invest_reporter.domain.errors import ProviderError
-from crewai_invest_reporter.domain.models import Document
 from crewai_invest_reporter.providers.http import BROWSER_HEADERS, build_session
 
 MAX_BYTES = 25 * 1024 * 1024
@@ -50,18 +49,17 @@ class HttpDocumentReader:
         self._max_bytes = max_bytes
         self._resolve_host = resolve_host
 
-    def read(self, url: str) -> Document:
+    def read(self, url: str) -> str:
+        """The document's text: PDF, XML, HTML or plain text, told apart by type or content."""
         content, content_type = self._download(url)
         if content.lstrip()[:5] == b"%PDF-" or "pdf" in content_type:
-            text, pages = _pdf_text(content)
-            return Document(url=url, content_type="application/pdf", text=text, pages=pages)
+            return _pdf_text(content)
         if "xml" in content_type or content.lstrip()[:5] == b"<?xml":
-            soup = BeautifulSoup(content, "xml")
-            return Document(url=url, content_type="text/xml", text=soup.get_text("\n", strip=True))
+            return BeautifulSoup(content, "xml").get_text("\n", strip=True)
         if "html" in content_type or b"<html" in content[:2048].lower():
-            return Document(url=url, content_type="text/html", text=_html_text(content))
+            return _html_text(content)
         if content_type.startswith("text/") or not content_type:
-            return Document(url=url, content_type="text/plain", text=_decode(content))
+            return _decode(content)
         raise ProviderError(f"Unsupported document type {content_type!r} at {url}")
 
     def _download(self, url: str) -> tuple[bytes, str]:
@@ -109,17 +107,17 @@ class HttpDocumentReader:
                 raise UnsafeUrlError(f"Refusing to access non-public address {ip} ({url})")
 
 
-def _pdf_text(content: bytes) -> tuple[str, int]:
+def _pdf_text(content: bytes) -> str:
+    """Pages are marked "[página N]" so repeated headers can be told apart from content."""
     try:
-        reader = PdfReader(io.BytesIO(content))
-        pages = reader.pages
+        pages = PdfReader(io.BytesIO(content)).pages[:MAX_PDF_PAGES]
         texts = [
             f"[página {number}]\n{page.extract_text() or ''}"
-            for number, page in enumerate(pages[:MAX_PDF_PAGES], start=1)
+            for number, page in enumerate(pages, start=1)
         ]
     except (PdfReadError, ValueError, KeyError) as exc:
         raise ProviderError(f"Could not read PDF: {exc}") from exc
-    return "\n".join(texts), len(pages)
+    return "\n".join(texts)
 
 
 def _html_text(content: bytes) -> str:

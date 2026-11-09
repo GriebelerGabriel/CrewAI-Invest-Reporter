@@ -60,7 +60,7 @@ class _FakeService:
     def __init__(self, fail=()):
         self.fail, self.calls = fail, []
 
-    def generate(self, ticker):
+    def generate(self, ticker, today):
         self.calls.append(ticker)
         if ticker in self.fail:
             raise self.fail[ticker]

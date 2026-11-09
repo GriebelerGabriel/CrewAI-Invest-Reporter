@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 from pathlib import Path
 
 import requests
@@ -14,7 +13,8 @@ from crewai_invest_reporter.providers.http import BROWSER_HEADERS, build_session
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TTL_SECONDS = 24 * 60 * 60
+# CVM refreshes its datasets during the day: 6 hours lets a morning run see yesterday's filings.
+DEFAULT_TTL_SECONDS = 6 * 60 * 60
 
 
 class DiskCachedFetcher:
@@ -26,17 +26,15 @@ class DiskCachedFetcher:
         session: requests.Session | None = None,
         timeout: float = 60.0,
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
-        clock: Callable[[], float] = time.time,
     ) -> None:
         self._cache_dir = cache_dir
         self._session = session or build_session(BROWSER_HEADERS)
         self._timeout = timeout
         self._ttl = ttl_seconds
-        self._clock = clock
 
     def get(self, url: str, cache_key: str) -> bytes:
         cached = self._cache_dir / cache_key
-        if cached.exists() and self._clock() - cached.stat().st_mtime < self._ttl:
+        if cached.exists() and time.time() - cached.stat().st_mtime < self._ttl:
             return cached.read_bytes()
         try:
             response = self._session.get(url, timeout=self._timeout)

@@ -84,14 +84,9 @@ class Investidor10Parser:
 
 
 class Investidor10Provider:
-    def __init__(
-        self,
-        session: requests.Session | None = None,
-        parser: Investidor10Parser | None = None,
-        timeout: float = 15.0,
-    ) -> None:
+    def __init__(self, session: requests.Session | None = None, timeout: float = 15.0) -> None:
         self._session = session or build_session(BROWSER_HEADERS)
-        self._parser = parser or Investidor10Parser()
+        self._parser = Investidor10Parser()
         self._timeout = timeout
 
     @staticmethod

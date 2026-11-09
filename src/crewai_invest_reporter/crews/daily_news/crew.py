@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-import json
 from datetime import date
 
 from crewai import Agent, BaseLLM, Crew, Process, Task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai.project import CrewBase, agent, crew, task
 
+from crewai_invest_reporter.crews import strip_code_fence, to_json
 from crewai_invest_reporter.domain.models import ResearchDossier
-from crewai_invest_reporter.services.report_writer import strip_code_fence
 
 NOTHING_NEW = "sem novidades relevantes"
-
-
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=1)
 
 
 def _price_line(price: float | None, change: float | None) -> str:
@@ -36,8 +31,8 @@ def daily_news_inputs(
         "today": today.isoformat(),
         "days": str(days),
         "price_line": _price_line(price, price_change),
-        "news_items": _json(data["news"]),
-        "new_documents": _json(data["documents"]),
+        "news_items": to_json(data["news"]),
+        "new_documents": to_json(data["documents"]),
     }
 
 

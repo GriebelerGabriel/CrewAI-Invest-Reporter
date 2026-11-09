@@ -93,7 +93,7 @@ def test_google_news_filters_low_signal_titles_and_limits_results():
 
 
 def test_google_news_url_is_properly_encoded():
-    url = GoogleNewsProvider.build_url("PETR4 Petrobras", 7, "pt-BR", "BR")
+    url = GoogleNewsProvider.build_url("PETR4 Petrobras", 7)
     assert "q=PETR4+Petrobras+when%3A7d" in url
     assert "ceid=BR%3Apt-BR" in url
 

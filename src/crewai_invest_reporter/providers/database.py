@@ -14,14 +14,7 @@ from contextlib import closing, contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
-from crewai_invest_reporter.domain.models import (
-    Digest,
-    Rating,
-    Source,
-    Subscriber,
-    Verdict,
-    utc_now,
-)
+from crewai_invest_reporter.domain.models import Digest, Rating, Source, Subscriber, utc_now
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS digests (
@@ -166,13 +159,6 @@ class Database:
                 ),
             )
 
-    def ratings_for(self, ticker: str) -> list[Rating]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM ratings WHERE ticker = ? ORDER BY day, id", (ticker,)
-            ).fetchall()
-        return [_rating(row) for row in rows]
-
     # --- subscribers ---------------------------------------------------------------------
 
     def request_confirmation(
@@ -245,12 +231,12 @@ class Database:
             ).fetchall()
         return [_subscriber(row) for row in rows]
 
-    def delete_unconfirmed(self, created_before: datetime) -> int:
-        """Drop sign-ups that were never confirmed, so their emails aren't kept."""
+    def delete_unconfirmed(self, last_emailed_before: datetime) -> int:
+        """Drop sign-ups never confirmed whose latest confirmation email is that old."""
         with self._connect() as conn:
             cursor = conn.execute(
-                "DELETE FROM subscribers WHERE confirmed_at IS NULL AND created_at < ?",
-                (created_before.isoformat(),),
+                "DELETE FROM subscribers WHERE confirmed_at IS NULL AND confirmation_sent_at < ?",
+                (last_emailed_before.isoformat(),),
             )
             return cursor.rowcount
 
@@ -286,20 +272,6 @@ def _digest(row: sqlite3.Row) -> Digest:
     )
 
 
-def _rating(row: sqlite3.Row) -> Rating:
-    return Rating(
-        day=date.fromisoformat(row["day"]),
-        ticker=row["ticker"],
-        verdict=Verdict(
-            row["rating"], row["probability_good"], row["probability_loss"], row["confidence"]
-        ),
-        price=row["price"],
-        metrics=json.loads(row["metrics"]),
-        model=row["model"],
-        report=row["report"],
-    )
-
-
 def _subscriber(row: sqlite3.Row) -> Subscriber:
     sent_at = row["confirmation_sent_at"]
     return Subscriber(
@@ -307,6 +279,5 @@ def _subscriber(row: sqlite3.Row) -> Subscriber:
         email=row["email"],
         tickers=tuple(t for t in row["tickers"].split(",") if t),
         unsubscribe_token=row["unsubscribe_token"],
-        confirmed=row["confirmed_at"] is not None,
         confirmation_sent_at=datetime.fromisoformat(sent_at) if sent_at else None,
     )

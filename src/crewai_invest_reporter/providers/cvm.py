@@ -128,15 +128,9 @@ class CvmCompanyFilingsProvider:
 
     SOURCE = "CVM (IPE)"
 
-    def __init__(
-        self,
-        client: CvmOpenDataClient,
-        today: Callable[[], date] = date.today,
-        categories: frozenset[str] = RELEVANT_IPE_CATEGORIES,
-    ) -> None:
+    def __init__(self, client: CvmOpenDataClient, today: Callable[[], date] = date.today) -> None:
         self._client = client
         self._today = today
-        self._categories = categories
 
     def list_filings(self, stock: Stock, *, days: int = 180, limit: int = 20) -> list[Filing]:
         if not stock.cnpj:
@@ -153,7 +147,7 @@ class CvmCompanyFilingsProvider:
         rows = self._client.iter_rows_for_years(IPE_ZIP, IPE_CSV, _recent_years(self._today()))
         for row in rows:
             cnpj = cnpj_digits(row.get("CNPJ_Companhia"))
-            if not cnpj or row.get("Categoria") not in self._categories:
+            if not cnpj or row.get("Categoria") not in RELEVANT_IPE_CATEGORIES:
                 continue
             filing = self._to_filing(row)
             if filing is not None:

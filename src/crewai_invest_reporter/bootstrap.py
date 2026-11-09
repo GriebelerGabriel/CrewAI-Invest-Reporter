@@ -23,16 +23,12 @@ from crewai_invest_reporter.providers.google_news import GoogleNewsProvider
 from crewai_invest_reporter.providers.investidor10 import Investidor10Provider
 from crewai_invest_reporter.providers.smtp import SmtpMailer
 from crewai_invest_reporter.services.daily import DailyDigestService
-from crewai_invest_reporter.services.report_writer import ReportWriter
 from crewai_invest_reporter.services.reporting import AssetReportService
 from crewai_invest_reporter.services.research import ResearchCollector
 from crewai_invest_reporter.services.stocks import StockResolver
 from crewai_invest_reporter.services.subscriptions import SubscriptionService
 from crewai_invest_reporter.settings import Settings
 from crewai_invest_reporter.watchlist import read_watchlist
-
-# CVM's daily datasets are refreshed often enough for a morning run to see yesterday's filings.
-CVM_CACHE_SECONDS = 6 * 60 * 60
 
 
 class Container:
@@ -43,7 +39,7 @@ class Container:
 
     @cached_property
     def _cvm(self) -> CvmOpenDataClient:
-        return CvmOpenDataClient.with_cache(self.settings.cache_dir, ttl_seconds=CVM_CACHE_SECONDS)
+        return CvmOpenDataClient.with_cache(self.settings.cache_dir)
 
     @cached_property
     def resolver(self) -> StockResolver:
@@ -106,7 +102,7 @@ class Container:
             analyze=lambda dossier, today: analyze(dossier, today, llm=self.llm),
             resolve=self.resolver.resolve,
             collector=self.collector,
-            writer=ReportWriter(self.settings.reports_dir),
+            reports_dir=self.settings.reports_dir,
             ratings=self.database,
             model=self.model_name,
         )

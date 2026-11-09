@@ -23,7 +23,7 @@ def build_session(headers: dict[str, str] | None = None, retries: int = 2) -> re
         total=retries,
         backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET", "POST"}),
+        allowed_methods=frozenset({"GET"}),
         # Return the last response instead of raising, so callers can inspect status/body.
         raise_on_status=False,
     )

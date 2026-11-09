@@ -95,7 +95,8 @@ class SubscriptionService:
         sent, failed = 0, []
         for subscriber in self._db.confirmed_subscribers():
             try:
-                sent += self._deliver(subscriber, day, digests)
+                if self._deliver(subscriber, day, digests):
+                    sent += 1
             except InvestReporterError as exc:
                 logger.warning("Email to %s failed: %s", subscriber.email, exc)
                 failed.append(subscriber.email)
@@ -105,6 +106,7 @@ class SubscriptionService:
         return self._db.delete_unconfirmed(self._clock() - UNCONFIRMED_KEPT_FOR)
 
     def _deliver(self, subscriber: Subscriber, day: date, digests: list[Digest]) -> bool:
+        """Email the subscriber's part of the day's digests; False if none or already sent."""
         mine = [d for d in digests if d.ticker in subscriber.tickers]
         if not mine or not self._db.claim_delivery(subscriber.id, day, self._clock()):
             return False

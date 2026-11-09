@@ -91,10 +91,12 @@ def _format_dossier(dossier: ResearchDossier) -> str:
 
 def _report(container: Container, tickers: list[str]) -> int:
     """One report per ticker; a failure is printed and the next ticker still runs."""
+    container.settings.llm.validate()  # fail now rather than after minutes of data collection
+    today = today_in_brazil()
     failed = []
     for ticker in tickers:
         try:
-            path = container.report_service.generate(ticker)
+            path = container.report_service.generate(ticker, today)
         except InvestReporterError as exc:
             print(f"{ticker}: error: {exc}", file=sys.stderr)
             failed.append(ticker)
@@ -112,15 +114,16 @@ def _daily(container: Container, send: bool) -> int:
     day = today_in_brazil()
     tickers = container.tickers()
     container.settings.llm.validate()
-    subscriptions = container.subscriptions if send else None  # checks the SMTP settings now
+    if send:
+        container.settings.mail.require()  # fail before spending on the LLM
     failed = container.daily_digests.run(day, tickers)
     print(f"Digests for {day}: {len(tickers) - len(failed)} of {len(tickers)} stocks")
     if failed:
         print(f"Failed: {', '.join(failed)}", file=sys.stderr)
-    if subscriptions is None:
+    if not send:
         return 1 if failed else 0
-    sent, failed_emails = subscriptions.send_daily(day)
-    purged = subscriptions.purge_unconfirmed()
+    sent, failed_emails = container.subscriptions.send_daily(day)
+    purged = container.subscriptions.purge_unconfirmed()
     print(f"Emails sent: {sent}, failed: {len(failed_emails)}, unconfirmed deleted: {purged}")
     return 1 if failed or failed_emails else 0
 
@@ -134,22 +137,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         container = Container(Settings.from_env())
         if args.command == "daily":
             return _daily(container, send=not args.no_email)
-        if args.command == "web":
-            app = create_app(
-                container.subscriptions, container.choices, container.settings.contact_email
-            )
-            serve(app, host=args.host, port=args.port)
         if args.command == "report":
-            tickers = args.tickers or container.tickers()
-            # Fail now rather than after minutes of data collection.
-            container.settings.llm.validate()
-            return _report(container, tickers)
+            return _report(container, args.tickers or container.tickers())
         if args.command == "dossier":
             dossier = container.report_service.collect(args.ticker)
             if args.json:
                 print(json.dumps(dossier.to_dict(), ensure_ascii=False, indent=2))
             else:
                 print(_format_dossier(dossier))
+        elif args.command == "web":
+            app = create_app(
+                container.subscriptions, container.choices, container.settings.contact_email
+            )
+            serve(app, host=args.host, port=args.port)
     except InvestReporterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

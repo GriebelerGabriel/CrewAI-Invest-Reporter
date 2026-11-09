@@ -291,7 +291,7 @@ class ResearchCollector:
         errors: list[str | None] = []
         for filing, _ in wanted:
             try:
-                texts.append(self._documents.read(filing.url).text)
+                texts.append(self._documents.read(filing.url))
                 errors.append(None)
             except InvestReporterError as exc:
                 logger.warning("Could not read %s: %s", filing.url, exc)

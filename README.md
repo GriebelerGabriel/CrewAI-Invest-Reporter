@@ -179,7 +179,7 @@ they will receive.
 | **Investidor10** | price, 12-month change, P/L, P/VP, dividend yield, dividends paid |
 | **Google News RSS** | up to 15 headlines from the last 30 days |
 
-CVM datasets are cached on disk for 24 hours (`CACHE_DIR`). If CVM is down, the last cached
+CVM datasets are cached on disk for 6 hours (`CACHE_DIR`). If CVM is down, the last cached
 copy is used. A source that fails doesn't stop the report: the failure is written into the
 dossier's `data_gaps`, and the agents are told to lower their confidence and mention it.
 
@@ -214,7 +214,7 @@ src/crewai_invest_reporter/
 │   ├── cache.py            # disk cache with stale fallback
 │   ├── parsing.py          # Brazilian number parsing
 │   └── http.py             # session with retries/backoff
-├── crews/
+├── crews/                  # __init__.py: prompt helpers shared by both crews
 │   ├── daily_news/         # 1 agent: the daily "what's new" briefing
 │   └── asset_report/       # 4 agents + verdict extraction: reports → news → fundamentals → rating
 └── services/
@@ -223,8 +223,7 @@ src/crewai_invest_reporter/
     ├── subscriptions.py    # sign-up, confirmation, unsubscribe, daily sending
     ├── emails.py           # email texts (pt-BR, plain text)
     ├── stocks.py           # ticker -> company (CVM registry)
-    ├── reporting.py        # full report: resolve → collect → analyze → write → save rating
-    └── report_writer.py
+    └── reporting.py        # full report: resolve → collect → analyze → write → save rating
 ```
 
 ### Full report flow

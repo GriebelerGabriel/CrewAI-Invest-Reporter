@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import date
-from typing import Protocol
 
 from crewai_invest_reporter.domain.models import Digest, ResearchDossier, Source, Stock
+from crewai_invest_reporter.providers.database import Database
 from crewai_invest_reporter.services.research import ResearchCollector
 
 logger = logging.getLogger(__name__)
@@ -20,19 +20,14 @@ logger = logging.getLogger(__name__)
 # News/filings window when the previous digest is old (e.g. after a long holiday).
 MAX_WINDOW_DAYS = 7
 
-Summarizer = Callable[[ResearchDossier, date, int, "float | None"], "str | None"]
-
-
-class DigestStore(Protocol):
-    def digest(self, day: date, ticker: str) -> Digest | None: ...
-    def last_digest(self, ticker: str, before: date) -> Digest | None: ...
-    def save_digest(self, digest: Digest) -> None: ...
+# (dossier, day, days covered, price change) -> the briefing, or None if nothing relevant.
+Summarizer = Callable[[ResearchDossier, date, int, float | None], str | None]
 
 
 class DailyDigestService:
     def __init__(
         self,
-        store: DigestStore,
+        store: Database,
         resolve: Callable[[str], Stock],
         collector: ResearchCollector,
         summarize: Summarizer,
@@ -49,13 +44,13 @@ class DailyDigestService:
             if self._store.digest(day, ticker) is not None:
                 continue  # already built today: running twice costs nothing
             try:
-                self._store.save_digest(self.build(ticker, day))
+                self._store.save_digest(self._build(ticker, day))
             except Exception:  # one stock failing must not block the others
                 logger.exception("%s: digest failed", ticker)
                 failed.append(ticker)
         return failed
 
-    def build(self, ticker: str, day: date) -> Digest:
+    def _build(self, ticker: str, day: date) -> Digest:
         stock = self._resolve(ticker)
         previous = self._store.last_digest(stock.ticker, before=day)
         days = min(max((day - previous.day).days, 1), MAX_WINDOW_DAYS) if previous else 1

@@ -15,47 +15,27 @@ from crewai_invest_reporter.providers.http import BROWSER_HEADERS, build_session
 RSS_SEARCH_URL = "https://news.google.com/rss/search"
 
 # Low-signal headlines (return simulators, "what if you had invested" pieces...).
-DEFAULT_EXCLUDED_TITLE_PATTERNS = (
-    r"\bquanto\s+ganharia\b",
-    r"\bquanto\s+renderia\b",
-    r"\bse\s+(?:voce|você)\s+tivesse\s+investido\b",
-    r"\bse\s+tivesse\s+investido\b",
-    r"\bsimulador\b",
-    r"\bsimula(?:c|ç)",
+_EXCLUDED_TITLES = re.compile(
+    r"\bquanto\s+(?:ganharia|renderia)\b|\bse\s+(?:voc[eê]\s+)?tivesse\s+investido\b"
+    r"|\bsimulador\b|\bsimula(?:c|ç)",
+    re.IGNORECASE,
 )
 
 
 class GoogleNewsProvider:
-    def __init__(
-        self,
-        session: requests.Session | None = None,
-        timeout: float = 15.0,
-        excluded_title_patterns: tuple[str, ...] = DEFAULT_EXCLUDED_TITLE_PATTERNS,
-    ) -> None:
+    """Brazilian Portuguese news search (Google News, Brazil edition)."""
+
+    def __init__(self, session: requests.Session | None = None, timeout: float = 15.0) -> None:
         self._session = session or build_session(BROWSER_HEADERS)
         self._timeout = timeout
-        self._excluded = re.compile("|".join(excluded_title_patterns), re.IGNORECASE)
 
     @staticmethod
-    def build_url(query: str, days: int, language: str, region: str) -> str:
-        params = {
-            "q": f"{query} when:{days}d",
-            "hl": language,
-            "gl": region,
-            "ceid": f"{region}:{language}",
-        }
+    def build_url(query: str, days: int) -> str:
+        params = {"q": f"{query} when:{days}d", "hl": "pt-BR", "gl": "BR", "ceid": "BR:pt-BR"}
         return f"{RSS_SEARCH_URL}?{urlencode(params)}"
 
-    def search(
-        self,
-        query: str,
-        *,
-        max_results: int = 10,
-        days: int = 30,
-        language: str = "pt-BR",
-        region: str = "BR",
-    ) -> list[NewsItem]:
-        url = self.build_url(query, days, language, region)
+    def search(self, query: str, *, max_results: int = 10, days: int = 30) -> list[NewsItem]:
+        url = self.build_url(query, days)
         try:
             # Fetch with requests (feedparser has no timeout control), then parse the body.
             response = self._session.get(url, timeout=self._timeout)
@@ -75,7 +55,7 @@ class GoogleNewsProvider:
 
     def _to_news_item(self, entry: dict) -> NewsItem | None:
         title = entry.get("title") or ""
-        if not title or self._excluded.search(title):
+        if not title or _EXCLUDED_TITLES.search(title):
             return None
         source = entry.get("source")
         return NewsItem(
