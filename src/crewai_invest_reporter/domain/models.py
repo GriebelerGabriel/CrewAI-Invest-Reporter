@@ -131,6 +131,7 @@ class Source:
     title: str
     url: str
     kind: str = "news"  # "news" or "filing"
+    cited: bool = False  # used in the briefing (shown in the email) or only seen
 
 
 @dataclass(frozen=True)

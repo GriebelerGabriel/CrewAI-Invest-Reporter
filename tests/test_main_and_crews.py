@@ -13,7 +13,12 @@ from crewai_invest_reporter.crews.asset_report.crew import (
     asset_report_inputs,
     read_analysis,
 )
-from crewai_invest_reporter.crews.daily_news.crew import DailyNewsCrew, daily_news_inputs
+from crewai_invest_reporter.crews.daily_news.crew import (
+    DailyNewsCrew,
+    daily_news_inputs,
+    item_urls,
+    renumber_citations,
+)
 from crewai_invest_reporter.domain.errors import InvalidTickerError
 from crewai_invest_reporter.domain.models import (
     DocumentExcerpt,
@@ -29,7 +34,6 @@ from crewai_invest_reporter.domain.models import (
 @pytest.fixture
 def fake_llm_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("BIFROST_BASE_URL", "")  # also shadows a local .env
 
 
 def _dossier():
@@ -146,9 +150,15 @@ def test_read_analysis_returns_the_report_and_the_parsed_verdict():
 
 
 def test_daily_news_inputs_interpolate_the_task(fake_llm_key):
-    inputs = daily_news_inputs(_dossier(), date(2026, 11, 9), days=3, price_change=-0.0123)
-    assert inputs["price_line"] == "R$ 38.45 (-1.23% desde o resumo anterior)"
+    dossier = _dossier()
+    inputs = daily_news_inputs(dossier, date(2026, 11, 9), days=3)
     assert inputs["days"] == "3"
+    # Documents first, then news, numbered; links left out (cited by number instead).
+    assert '"n": 1' in inputs["items"] and '"n": 2' in inputs["items"]
+    assert inputs["items"].index("documento CVM") < inputs["items"].index("notícia")
+    assert "https://" not in inputs["items"]
+    assert "38.45" not in inputs["items"]  # the agent never sees the price
+    assert item_urls(dossier) == ["https://f/1", "https://n/1"]
 
     crew = DailyNewsCrew().crew()
     placeholder = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
@@ -157,3 +167,12 @@ def test_daily_news_inputs_interpolate_the_task(fake_llm_key):
         unresolved = placeholder.findall(crew_task.description.replace("{x}", ""))
         assert not unresolved, (crew_task.name, unresolved)
     assert all(not agent.tools for agent in crew.agents)
+
+
+def test_citations_are_renumbered_in_order_of_use_and_invalid_ones_dropped():
+    urls = ["u1", "u2", "u3", "u4"]
+    text, cited = renumber_citations(
+        "- Lucro subiu [3]  \n- Dividendos [1, 3]\n- Fato [9]\n- Outro [4][4]", urls
+    )
+    assert text == "- Lucro subiu [1]\n- Dividendos [2, 1]\n- Fato\n- Outro [3][3]"
+    assert cited == ["u3", "u1", "u4"]

@@ -87,7 +87,8 @@ class Database:
     # --- digests -------------------------------------------------------------------------
 
     def save_digest(self, digest: Digest) -> None:
-        sources = json.dumps([[s.title, s.url, s.kind] for s in digest.sources], ensure_ascii=False)
+        sources = [[s.title, s.url, s.kind, s.cited] for s in digest.sources]
+        sources = json.dumps(sources, ensure_ascii=False)
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?)",

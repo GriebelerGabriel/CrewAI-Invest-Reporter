@@ -3,27 +3,24 @@ daily_summary_task:
     Today is {today}. Write the morning briefing on {ticker} ({company}): what is new since
     the previous briefing, {days} day(s) ago.
 
-    Price: {price_line}
-
-    News headlines (Google News; headlines only):
-    {news_items}
-
-    New documents the company filed with CVM (excerpts; "truncated": true means only the
-    beginning is included):
-    {new_documents}
+    Numbered items: the new documents the company filed with CVM (excerpts; "truncated": true
+    means only the beginning is included), then news headlines from Google News:
+    {items}
 
     Rules:
     - Write in Brazilian Portuguese (pt-BR), 2 to 5 bullet points starting with "- ", the most
       important first, each one or two sentences.
-    - Use only facts written above and quote figures exactly. Do not invent or infer anything.
+    - End every bullet with the numbers of the items it is based on, in brackets: [2] or [1, 4].
+    - Use only facts written in the items and quote figures exactly. Do not invent or infer
+      anything, and do not add interpretations or conclusions of your own.
+    - Do not state the stock's current or closing price: the email shows it separately.
     - Prefer the official documents; mention a document by its title.
-    - Ignore low-signal headlines: quote recaps, "quanto renderia" pieces, and market roundups
-      that only list {ticker} among many stocks.
-    - Never recommend buying, selling or holding, and give no price targets or opinions of
-      your own. An analyst's recommendation reported in the news may be mentioned, saying
-      who made it.
-    - If nothing above is relevant to {ticker}, answer exactly: Sem novidades relevantes.
+    - Ignore items that are not about {company}, and low-signal ones: quote recaps,
+      "quanto renderia" pieces, and market roundups that only list {ticker} among many stocks.
+    - Never recommend buying, selling or holding, and give no price targets of your own. An
+      analyst's recommendation reported in the news may be mentioned, saying who made it.
+    - If no item is relevant to {company}, answer exactly: Sem novidades relevantes.
   expected_output: >
-    2 to 5 plain-text bullet points in pt-BR (no headings, no code fences), or exactly
-    "Sem novidades relevantes."
+    2 to 5 plain-text bullet points in pt-BR, each ending with its item numbers in brackets
+    (no headings, no code fences), or exactly "Sem novidades relevantes."
   agent: news_writer

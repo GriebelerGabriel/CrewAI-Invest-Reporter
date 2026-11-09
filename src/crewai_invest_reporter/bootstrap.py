@@ -113,9 +113,7 @@ class Container:
             store=self.database,
             resolve=self.resolver.resolve,
             collector=self.collector,
-            summarize=lambda dossier, day, days, change: summarize(
-                dossier, day, days, change, llm=self.llm
-            ),
+            summarize=lambda dossier, day, days: summarize(dossier, day, days, llm=self.llm),
         )
 
     @cached_property

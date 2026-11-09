@@ -35,12 +35,17 @@ class FakeCollector:
 
 
 class FakeSummarizer:
-    def __init__(self, answer="- PETR4 anunciou dividendos."):
-        self.answer, self.calls = answer, []
+    """Cites the last item (a news link) first, then the first one (a filing, if any)."""
 
-    def __call__(self, dossier, day, days, change):
-        self.calls.append((dossier.stock.ticker, day, days, change))
-        return self.answer
+    def __init__(self, nothing_relevant=False):
+        self.nothing_relevant, self.calls = nothing_relevant, []
+
+    def __call__(self, dossier, day, days):
+        self.calls.append((dossier.stock.ticker, day, days))
+        if self.nothing_relevant:
+            return None
+        urls = [d.filing.url for d in dossier.documents] + [n.url for n in dossier.news]
+        return "- PETR4 anunciou dividendos. [1, 2]", list(dict.fromkeys([urls[-1], urls[0]]))
 
 
 def _service(tmp_path, collector, summarizer=None):
@@ -67,10 +72,11 @@ def test_builds_digest_with_summary_sources_and_price(tmp_path):
     assert service.run(MON, ["PETR4"]) == []
 
     digest = db.digest(MON, "PETR4")
-    assert digest.summary == "- PETR4 anunciou dividendos."
-    assert [(s.kind, s.url) for s in digest.sources] == [
-        ("filing", "https://rad.cvm/1"),
-        ("news", "https://n/1"),
+    assert digest.summary == "- PETR4 anunciou dividendos. [1, 2]"
+    # Cited sources come first, in citation order, and are marked as cited.
+    assert [(s.kind, s.url, s.cited) for s in digest.sources] == [
+        ("news", "https://n/1", True),
+        ("filing", "https://rad.cvm/1", True),
     ]
     assert (digest.name, digest.price, digest.price_change) == ("Empresa PETR4", 10.0, None)
     assert collector.calls == [("PETR4", 1, frozenset())]  # first digest: last day only
@@ -94,9 +100,12 @@ def test_next_digest_covers_the_gap_skips_reported_links_and_computes_the_move(t
 
 
 def test_nothing_relevant_from_the_agent_leaves_no_summary(tmp_path):
-    service, db = _service(tmp_path, FakeCollector(NEWS), FakeSummarizer(answer=None))
+    service, db = _service(tmp_path, FakeCollector(NEWS), FakeSummarizer(nothing_relevant=True))
     service.run(MON, ["PETR4"])
-    assert db.digest(MON, "PETR4").summary is None
+    digest = db.digest(MON, "PETR4")
+    assert digest.summary is None
+    # Seen but not cited: kept, so tomorrow skips it, but not shown in the email.
+    assert [(s.url, s.cited) for s in digest.sources] == [("https://n/1", False)]
 
 
 def test_run_is_idempotent_and_one_failure_does_not_stop_the_others(tmp_path):
