@@ -56,31 +56,22 @@ def test_investidor10_parser_returns_empty_for_unrelated_page():
     assert Investidor10Parser().parse("<html><body>nada</body></html>") == {}
 
 
-@pytest.mark.parametrize(
-    ("ticker", "categories"),
-    [
-        ("PETR4", ["acoes"]),
-        ("AAPL34", ["bdrs"]),
-        ("TAEE11", ["fiis", "etfs", "acoes"]),
-    ],
-)
-def test_investidor10_candidate_urls(ticker, categories):
-    urls = Investidor10Provider.candidate_urls(ticker)
-    assert [url.split("/")[3] for url in urls] == categories
-    assert all(url.endswith(f"/{ticker.lower()}/") for url in urls)
-
-
 @responses.activate
-def test_investidor10_falls_back_to_next_category():
-    responses.get("https://investidor10.com.br/fiis/taee11/", status=404)
-    responses.get("https://investidor10.com.br/etfs/taee11/", status=404)
-    responses.get("https://investidor10.com.br/acoes/taee11/", body=HTML)
-    fundamentals = Investidor10Provider().fetch("taee11.sa")
-    assert fundamentals.ticker == "TAEE11"
-    assert fundamentals.source_url.endswith("/acoes/taee11/")
+def test_investidor10_fetches_the_stock_page():
+    responses.get("https://investidor10.com.br/acoes/brbi11/", body=HTML)
+    fundamentals = Investidor10Provider().fetch("brbi11.sa")
+    assert fundamentals.ticker == "BRBI11"
+    assert fundamentals.source_url == "https://investidor10.com.br/acoes/brbi11/"
     assert fundamentals.metrics["currentPrice"] == 38.45
     assert fundamentals.metrics["dividendYield"] == pytest.approx(0.142)
     assert fundamentals.metrics["priceChange12m"] == pytest.approx(-0.032)
+
+
+@responses.activate
+def test_investidor10_rejects_pages_without_indicators():
+    responses.get("https://investidor10.com.br/acoes/petr4/", body="<html>nada</html>")
+    with pytest.raises(ProviderError, match="no indicators"):
+        Investidor10Provider().fetch("PETR4")
 
 
 @responses.activate
@@ -112,27 +103,3 @@ def test_google_news_wraps_http_errors():
     responses.get(RSS_SEARCH_URL, status=404)
     with pytest.raises(ProviderError):
         GoogleNewsProvider().search("PETR4")
-
-
-@pytest.mark.parametrize(
-    ("html", "expected"),
-    [
-        ("<p>Listada na Nasdaq sob o ticker AAPL .</p>", "AAPL"),
-        ("<p>está listada na Nasdaq , através do ticker META e</p>", "META"),
-        ("<p>listadas na Nasdaq sob os tickers GOOGL . História</p>", "GOOGL"),
-        ("<p>negociada na NYSE com o ticker BRK.B hoje</p>", "BRK.B"),
-        ("<p>sem informação</p>", None),
-    ],
-)
-def test_investidor10_underlying_ticker(html, expected):
-    assert Investidor10Parser.underlying_ticker(html) == expected
-
-
-@responses.activate
-def test_investidor10_fetches_each_page_once():
-    page = HTML.replace("</body>", "<p>Nasdaq sob o ticker AAPL .</p></body>")
-    responses.get("https://investidor10.com.br/bdrs/aapl34/", body=page)
-    provider = Investidor10Provider()
-    assert provider.fetch("AAPL34").ticker == "AAPL34"
-    assert provider.underlying_ticker("AAPL34") == "AAPL"
-    assert len(responses.calls) == 1

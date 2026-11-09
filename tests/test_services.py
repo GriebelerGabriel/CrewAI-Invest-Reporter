@@ -1,62 +1,72 @@
 from __future__ import annotations
 
 from datetime import date
-from types import SimpleNamespace
 
 import pytest
 
-from crewai_invest_reporter.domain.errors import InvalidTickerError
-from crewai_invest_reporter.domain.models import AssetClass, AssetRef, ResearchDossier
-from crewai_invest_reporter.domain.tickers import normalize_ticker
+from crewai_invest_reporter.domain.errors import InvalidTickerError, ProviderError
+from crewai_invest_reporter.domain.models import (
+    Analysis,
+    Fundamentals,
+    ResearchDossier,
+    Verdict,
+)
+from crewai_invest_reporter.providers.cvm import RegistryEntry
 from crewai_invest_reporter.services.report_writer import ReportWriter
 from crewai_invest_reporter.services.reporting import AssetReportService
+from crewai_invest_reporter.services.stocks import StockResolver
 
 TODAY = date(2026, 10, 17)
+VERDICT = Verdict("Good to invest", 65, 35, "média")
+ANALYSIS = Analysis("# Relatório", VERDICT)
 
 
-class FakeCrew:
-    def __init__(self, output="# Relatório", fail_for=()):
-        self.output, self.fail_for, self.inputs = output, set(fail_for), []
+class FakeRegistry:
+    def __init__(self, error=None):
+        self.error = error
 
-    def kickoff(self, inputs):
-        self.inputs.append(inputs)
-        if inputs.get("asset_id") in self.fail_for:
-            raise RuntimeError("llm down")
-        return SimpleNamespace(raw=self.output)
-
-
-class FakeResolver:
-    def __init__(self):
-        self.calls = []
-
-    def resolve(self, identifier):
-        self.calls.append(identifier)
-        ticker = normalize_ticker(identifier)
-        return AssetRef(ticker, AssetClass.STOCK, f"Empresa {ticker}", "33000167000101")
+    def lookup(self, ticker):
+        if self.error:
+            raise self.error
+        return {"PETR4": RegistryEntry("33000167000101", "PETROBRAS")}.get(ticker)
 
 
 class FakeCollector:
     def __init__(self):
-        self.assets = []
+        self.stocks = []
 
-    def collect(self, asset):
-        self.assets.append(asset)
-        return ResearchDossier(asset=asset, gaps=("sem notícias",))
-
-
-def _inputs(dossier, today):
-    asset = dossier.asset
-    return {"asset_id": asset.identifier, "asset_class": asset.asset_class.value}
+    def collect(self, stock):
+        self.stocks.append(stock)
+        fundamentals = Fundamentals(
+            stock.ticker, "u", {"currentPrice": 38.45, "trailingPE": 4.5}, {}
+        )
+        return ResearchDossier(stock=stock, fundamentals=fundamentals)
 
 
-def _asset_service(crew, writer, resolver=None, collector=None):
-    return AssetReportService(
-        crew_factory=lambda: crew,
-        inputs_builder=_inputs,
-        resolver=resolver or FakeResolver(),
+class FakeRatings:
+    def __init__(self):
+        self.saved = []
+
+    def save_rating(self, rating):
+        self.saved.append(rating)
+
+
+def _service(tmp_path, analysis=ANALYSIS, ratings=None, collector=None):
+    calls = []
+
+    def analyze(dossier, today):
+        calls.append((dossier.stock.ticker, today))
+        return analysis
+
+    service = AssetReportService(
+        analyze=analyze,
+        resolve=StockResolver(FakeRegistry()).resolve,
         collector=collector or FakeCollector(),
-        writer=writer,
+        writer=ReportWriter(tmp_path),
+        ratings=ratings,
+        model="openai/gpt-4.1-mini",
     )
+    return service, calls
 
 
 def test_report_writer_strips_code_fence_and_rejects_unsafe_names(tmp_path):
@@ -67,38 +77,42 @@ def test_report_writer_strips_code_fence_and_rejects_unsafe_names(tmp_path):
         writer.path_for("../escape")
 
 
-def test_asset_service_resolves_identifier_and_writes_report(tmp_path):
-    crew = FakeCrew()
-    path = _asset_service(crew, ReportWriter(tmp_path)).generate("petr4.sa", today=TODAY)
+def test_generate_writes_the_report_and_saves_the_rating(tmp_path):
+    ratings, collector = FakeRatings(), FakeCollector()
+    service, calls = _service(tmp_path, ratings=ratings, collector=collector)
+    path = service.generate("petr4.sa", today=TODAY)
+
     assert path == tmp_path / "PETR4_investment_report.md"
-    assert crew.inputs == [{"asset_id": "PETR4", "asset_class": "STOCK"}]
+    assert path.read_text(encoding="utf-8") == "# Relatório\n"
+    assert calls == [("PETR4", TODAY)]
+    assert [s.cnpj for s in collector.stocks] == ["33000167000101"]
+    (rating,) = ratings.saved
+    assert (rating.day, rating.ticker, rating.verdict, rating.price) == (
+        TODAY,
+        "PETR4",
+        VERDICT,
+        38.45,
+    )
+    assert rating.metrics["trailingPE"] == 4.5
+    assert rating.model == "openai/gpt-4.1-mini"
+    assert rating.report == "# Relatório"
 
 
-def test_asset_service_rejects_invalid_identifier(tmp_path):
-    with pytest.raises(InvalidTickerError):
-        _asset_service(FakeCrew(), ReportWriter(tmp_path)).generate("../../etc/passwd")
+def test_report_without_verdict_is_written_but_not_rated(tmp_path):
+    ratings = FakeRatings()
+    service, _ = _service(tmp_path, analysis=Analysis("# Relatório"), ratings=ratings)
+    assert service.generate("PETR4", today=TODAY).exists()
+    assert ratings.saved == []
 
 
-def test_asset_service_enriches_holdings_but_keeps_their_asset_class(tmp_path):
-    resolver = FakeResolver()
-    service = _asset_service(FakeCrew(), ReportWriter(tmp_path), resolver)
-    enriched = service.resolve(AssetRef("BOVA11", AssetClass.ETF))
-    assert enriched.asset_class is AssetClass.ETF
-    assert enriched.cnpj == "33000167000101"
-    assert enriched.name == "Empresa BOVA11"
-
-    assert resolver.calls == ["BOVA11"]
+def test_resolver_rejects_invalid_and_unlisted_tickers():
+    resolver = StockResolver(FakeRegistry())
+    with pytest.raises(InvalidTickerError, match="Invalid B3 ticker"):
+        resolver.resolve("../../etc/passwd")
+    with pytest.raises(InvalidTickerError, match="not a company listed"):
+        resolver.resolve("XPTO3")
 
 
-def test_asset_service_collects_before_running_the_crew(tmp_path):
-    collector, crew = FakeCollector(), FakeCrew()
-    service = _asset_service(crew, ReportWriter(tmp_path), collector=collector)
-    service.generate("VALE3", today=TODAY)
-    assert [a.identifier for a in collector.assets] == ["VALE3"]
-    assert crew.inputs == [{"asset_id": "VALE3", "asset_class": "STOCK"}]
-
-
-def test_fund_reports_are_named_by_cnpj(tmp_path):
-    fund = AssetRef("11222333000181", AssetClass.MUTUAL_FUND, "Fundo", "11222333000181")
-    path = _asset_service(FakeCrew(), ReportWriter(tmp_path)).generate(fund, today=TODAY)
-    assert path.name == "FUNDO_11222333000181_investment_report.md"
+def test_resolver_works_without_cnpj_when_cvm_is_offline():
+    stock = StockResolver(FakeRegistry(error=ProviderError("CVM offline"))).resolve("PETR4")
+    assert (stock.ticker, stock.name, stock.cnpj) == ("PETR4", None, None)

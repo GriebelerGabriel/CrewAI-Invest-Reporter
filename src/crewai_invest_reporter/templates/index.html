@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Resumo diário de ações</h1>
+<p>Todo dia útil, antes da abertura da B3, um e-mail curto com as notícias e os documentos
+entregues à CVM das ações que você escolher.</p>
+<form class="card" method="post" action="/inscrever">
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <fieldset>
+    <legend>Ações</legend>
+    {% for ticker, name in choices %}
+    <label class="stock">
+      <input type="checkbox" name="tickers" value="{{ ticker }}" {% if ticker in chosen %}checked{% endif %}>
+      <span>{{ ticker }}{% if name %}<small>{{ name }}</small>{% endif %}</span>
+    </label>
+    {% endfor %}
+  </fieldset>
+  <label for="email"><strong>Seu e-mail</strong></label>
+  <input id="email" type="email" name="email" value="{{ email }}" required autocomplete="email">
+  <label class="hp" aria-hidden="true">Não preencha <input name="website" tabindex="-1" autocomplete="off"></label>
+  <button type="submit">Quero receber</button>
+  <p class="muted" style="margin:.75rem 0 0">Você recebe um link de confirmação. Para mudar as
+  ações depois, é só se inscrever de novo com o mesmo e-mail.</p>
+</form>
+{% endblock %}

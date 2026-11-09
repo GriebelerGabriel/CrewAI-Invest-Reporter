@@ -1,7 +1,8 @@
-"""The wallet page: type in the stocks and funds you hold.
+"""The public sign-up page: pick stocks, leave an email, confirm through the emailed link.
 
-It has no login of its own and is meant for one person. Serve it on 127.0.0.1, and put it
-behind a password (e.g. nginx basic auth) before making it reachable from anywhere else.
+Links in emails only show a button; the action itself is a POST, because mailbox security
+scanners open links (GET) on their own and would otherwise confirm or unsubscribe people.
+Rate limiting belongs to the reverse proxy in front (see README "Daily email").
 """
 
 from __future__ import annotations
@@ -10,162 +11,126 @@ import logging
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
-from flask import Flask, abort, redirect, render_template, request, url_for
+from flask import Flask, abort, render_template, request
 
-from crewai_invest_reporter.domain.cnpj import cnpj_digits, format_cnpj
-from crewai_invest_reporter.domain.errors import InvestReporterError
-from crewai_invest_reporter.domain.models import AssetClass, AssetRef
-from crewai_invest_reporter.providers.b3_position import read_b3_positions
-from crewai_invest_reporter.providers.parsing import parse_br_number
-from crewai_invest_reporter.providers.wallet import WalletEntry, WalletFile
+from crewai_invest_reporter.domain.errors import InvestReporterError, SubscriptionError
+from crewai_invest_reporter.services.subscriptions import SubscriptionService
 
 logger = logging.getLogger(__name__)
 
-SHORT_LABELS = {
-    AssetClass.STOCK: "Ação",
-    AssetClass.REAL_ESTATE_FUND: "FII",
-    AssetClass.ETF: "ETF",
-    AssetClass.BDR: "BDR",
-    AssetClass.MUTUAL_FUND: "Fundo",
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'"
+    ),
+    # Confirmation/unsubscribe tokens are in the URL: never leak them to other sites.
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
 }
-_UNITS = {AssetClass.STOCK: "ações", AssetClass.BDR: "BDRs"}  # FIIs and ETFs: "cotas"
-_CLASS_ORDER = list(AssetClass)
-MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # a B3 position file is a few dozen KB
 
 
 def create_app(
-    wallet: WalletFile,
-    resolve: Callable[[str], AssetRef],
-    suggestions: Callable[[], list[tuple[str, str]]] = list,
+    subscriptions: SubscriptionService,
+    choices: Callable[[], list[tuple[str, str]]],
+    contact_email: str = "",
 ) -> Flask:
-    """``resolve`` identifies a typed ticker/CNPJ; ``suggestions`` feeds the autocompletion."""
+    """``choices`` gives the (ticker, company name) pairs offered on the form."""
     app = Flask(__name__)
-    app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
-    app.jinja_env.filters.update(br=format_br, qty=format_quantity, asset_id=display_id)
-    app.jinja_env.globals.update(
-        short_label=SHORT_LABELS.get, unit=lambda entry: _UNITS.get(entry.asset_class, "cotas")
-    )
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
+    app.jinja_env.globals["contact_email"] = contact_email
 
     @app.before_request
     def reject_cross_site_posts():
-        # Browsers resend a saved password with form posts from any site: accept only ours.
+        # Mail providers' one-click unsubscribe POSTs carry no Origin and are accepted.
         origin = request.headers.get("Origin")
         if request.method == "POST" and origin and urlsplit(origin).netloc != request.host:
             abort(403)
 
-    def page(error: str | None = None, status: int = 200, prefill: dict | None = None):
-        entries = sorted(
-            wallet.load(), key=lambda e: (_CLASS_ORDER.index(e.asset_class), e.identifier)
-        )
-        if prefill is None:
-            editing = next((e for e in entries if e.identifier == request.args.get("editar")), None)
-            prefill = _prefill(editing) if editing else {}
-        try:
-            options = suggestions()
-        except InvestReporterError as exc:
-            logger.warning("No ticker suggestions: %s", exc)
-            options = []
+    @app.after_request
+    def security_headers(response):
+        response.headers.update(SECURITY_HEADERS)
+        return response
+
+    def form(error: str | None = None, status: int = 200, email: str = "", chosen=()):
         html = render_template(
-            "wallet.html",
-            entries=entries,
-            suggestions=options,
-            error=error,
-            prefill=prefill,
-            saved=request.args.get("salvo"),
-            removed=request.args.get("removido"),
-            imported=request.args.get("importados"),
+            "index.html", choices=choices(), error=error, email=email, chosen=set(chosen)
         )
         return html, status
 
+    def message(title: str, text: str, status: int = 200):
+        return render_template("message.html", title=title, text=text), status
+
     @app.get("/")
     def index():
-        return page()
+        return form()
 
-    @app.post("/add")
-    def add():
-        form = {key: request.form.get(key, "").strip() for key in ("identifier", "amount", "name")}
-        form["kind"] = "fund" if request.form.get("kind") == "fund" else "ticker"
-        is_fund = form["kind"] == "fund"
-        amount = parse_br_number(form["amount"])
-
-        error = None
-        if amount is None or amount <= 0:
-            error = f"Informe {'um valor' if is_fund else 'uma quantidade'} maior que zero."
-        elif is_fund and not cnpj_digits(form["identifier"]):
-            error = "Digite um CNPJ válido, como 11.222.333/0001-81."
-        elif not is_fund and cnpj_digits(form["identifier"]):
-            error = "Isso é um CNPJ: cadastre fundos em “Fundo de investimento”, pelo valor em R$."
-        if error:
-            return page(error, 400, form)
+    @app.post("/inscrever")
+    def subscribe():
+        email = request.form.get("email", "")
+        tickers = request.form.getlist("tickers")
+        if request.form.get("website"):  # hidden field only bots fill in
+            return message("Quase lá", "Confira seu e-mail para confirmar a inscrição.")
         try:
-            asset = resolve(form["identifier"])
-        except InvestReporterError:
-            return page(
-                f"Não reconhecemos “{form['identifier']}”. Use um ticker da B3, como PETR4.",
-                400,
-                form,
-            )
-        name = form["name"] or asset.name
-        wallet.upsert(WalletEntry(asset.identifier, asset.asset_class, amount, name, asset.cnpj))
-        return redirect(url_for("index", salvo=asset.identifier))
-
-    @app.post("/remove")
-    def remove():
-        identifier = request.form.get("identifier", "")
-        wallet.remove(identifier)
-        return redirect(url_for("index", removido=identifier))
-
-    @app.post("/import")
-    def import_b3():
-        upload = request.files.get("file")
-        if upload is None or not upload.filename:
-            return page("Escolha o arquivo .xlsx baixado da Área do Investidor da B3.", 400)
-        try:
-            positions = read_b3_positions(upload.read())
-            assets = [(resolve(ticker), quantity) for ticker, quantity in positions.items()]
+            subscriptions.request(email, tickers)
+        except SubscriptionError as exc:
+            return form(str(exc), 400, email, tickers)
         except InvestReporterError as exc:
-            logger.warning("B3 import failed: %s", exc)
-            return page(
-                "Não consegui ler esse arquivo. Envie a posição em Excel (.xlsx) baixada da "
-                "Área do Investidor da B3.",
-                400,
-            )
-        if not assets:
-            return page("Nenhuma ação, FII, ETF ou BDR encontrada nesse arquivo.", 400)
-        wallet.replace_tickers(
-            WalletEntry(asset.identifier, asset.asset_class, quantity, asset.name, asset.cnpj)
-            for asset, quantity in assets
+            logger.error("Sign-up email failed: %s", exc)
+            return message("Tente mais tarde", "Não conseguimos enviar o e-mail agora.", 503)
+        # Same answer whether or not the address was already subscribed.
+        return message(
+            "Quase lá",
+            "Enviamos um link de confirmação para o seu e-mail. Abra-o em até 2 dias para "
+            "começar a receber o resumo.",
         )
-        return redirect(url_for("index", importados=len(assets)))
 
-    @app.errorhandler(413)
-    def upload_too_large(_error):
-        return page("Arquivo grande demais: o limite é 5 MB.", 413)
+    @app.get("/confirmar")
+    def confirm_page():
+        return render_template(
+            "action.html",
+            title="Confirmar inscrição",
+            text="Clique para confirmar e começar a receber o resumo diário.",
+            action="/confirmar",
+            button="Confirmar",
+            token=request.args.get("t", ""),
+        )
+
+    @app.post("/confirmar")
+    def confirm():
+        result = subscriptions.confirm(request.form.get("t", ""))
+        if result is None:
+            return message(
+                "Link inválido ou expirado", "Faça a inscrição de novo na página inicial.", 400
+            )
+        when = (
+            "O resumo de hoje já foi enviado para você."
+            if result.sent_today
+            else "O primeiro resumo chega no próximo dia útil, antes da abertura da B3."
+        )
+        tickers = ", ".join(result.subscriber.tickers)
+        return message("Inscrição confirmada", f"Ações: {tickers}. {when}")
+
+    @app.get("/cancelar")
+    def unsubscribe_page():
+        return render_template(
+            "action.html",
+            title="Cancelar inscrição",
+            text="Você deixa de receber o resumo e o seu e-mail é apagado.",
+            action="/cancelar",
+            button="Cancelar inscrição",
+            token=request.args.get("t", ""),
+        )
+
+    @app.post("/cancelar")
+    def unsubscribe():
+        # The form sends the token in the body; one-click unsubscribe keeps it in the URL.
+        subscriptions.unsubscribe(request.form.get("t") or request.args.get("t", ""))
+        return message(
+            "Inscrição cancelada", "Você não receberá mais e-mails e seus dados foram apagados."
+        )
+
+    @app.get("/privacidade")
+    def privacy():
+        return render_template("privacy.html")
 
     return app
-
-
-def _prefill(entry: WalletEntry) -> dict:
-    """Form values to edit an entry already in the wallet."""
-    return {
-        "kind": "ticker" if entry.by_ticker else "fund",
-        "identifier": display_id(entry.identifier),
-        "amount": format_quantity(entry.amount) if entry.by_ticker else format_br(entry.amount),
-        "name": entry.name or "",
-        "editing": True,
-    }
-
-
-def format_br(value: float, decimals: int = 2) -> str:
-    """1234.5 -> "1.234,50" (Brazilian thousands and decimal separators)."""
-    return f"{value:,.{decimals}f}".replace(",", "_").replace(".", ",").replace("_", ".")
-
-
-def format_quantity(value: float) -> str:
-    """Whole numbers without decimals: 1000 -> "1.000", 2.5 -> "2,50"."""
-    return format_br(value, 0 if float(value).is_integer() else 2)
-
-
-def display_id(identifier: str) -> str:
-    """Tickers as they are, fund CNPJs formatted: "11.222.333/0001-81"."""
-    return format_cnpj(identifier) if identifier.isdigit() else identifier

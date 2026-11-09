@@ -20,11 +20,11 @@ class ReportWriter:
     def write(self, name: str, content: str) -> Path:
         path = self.path_for(name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_strip_code_fence(content).strip() + "\n", encoding="utf-8")
+        path.write_text(strip_code_fence(content).strip() + "\n", encoding="utf-8")
         return path
 
 
-def _strip_code_fence(text: str) -> str:
+def strip_code_fence(text: str) -> str:
     """LLMs sometimes wrap the whole markdown answer in a ``` fence despite instructions."""
     stripped = text.strip()
     match = re.fullmatch(r"```(?:markdown|md)?\s*\n(.*)\n```", stripped, flags=re.DOTALL)

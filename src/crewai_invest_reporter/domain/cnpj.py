@@ -1,4 +1,4 @@
-"""CNPJ (Brazilian company/fund tax id) helpers."""
+"""CNPJ (Brazilian company tax id) helpers."""
 
 from __future__ import annotations
 
@@ -8,15 +8,11 @@ _NON_DIGITS = re.compile(r"\D")
 
 
 def cnpj_digits(raw: str | None) -> str | None:
-    """Return the 14 CNPJ digits (``"97.521.225/0001-25"`` -> ``"97521225000125"``) or None."""
+    """Return the 14 CNPJ digits (``"33.000.167/0001-01"`` -> ``"33000167000101"``) or None."""
     if not raw:
         return None
     digits = _NON_DIGITS.sub("", raw)
     return digits if len(digits) == 14 and _has_valid_check_digits(digits) else None
-
-
-def format_cnpj(digits: str) -> str:
-    return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
 
 
 def _has_valid_check_digits(digits: str) -> bool:

@@ -1,73 +1,69 @@
-"""Application services: orchestrate data providers, crews and report persistence."""
+"""Full report of one stock: resolve → collect (no LLM) → analyze (LLM) → write and remember."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
-from crewai_invest_reporter.domain.errors import InvestReporterError
-from crewai_invest_reporter.domain.models import AssetRef, ResearchDossier
-from crewai_invest_reporter.domain.ports import AssetResolver
+from crewai_invest_reporter.domain.models import Analysis, Rating, ResearchDossier, Stock
 from crewai_invest_reporter.services.report_writer import ReportWriter
 from crewai_invest_reporter.services.research import ResearchCollector
 
 logger = logging.getLogger(__name__)
 
-
-class Kickoffable(Protocol):
-    """What services need from a crew: run it with inputs and get a result with ``.raw``."""
-
-    def kickoff(self, inputs: dict[str, Any]) -> Any: ...
+Analyzer = Callable[[ResearchDossier, date], Analysis]
 
 
-CrewFactory = Callable[[], Kickoffable]
-InputsBuilder = Callable[[ResearchDossier, date], dict[str, str]]
+class RatingStore(Protocol):
+    def save_rating(self, rating: Rating) -> None: ...
 
 
 class AssetReportService:
-    """Generate the report of one asset: resolve → collect (no LLM) → analyze (LLM) → write."""
-
     def __init__(
         self,
-        crew_factory: CrewFactory,
-        inputs_builder: InputsBuilder,
-        resolver: AssetResolver,
+        analyze: Analyzer,
+        resolve: Callable[[str], Stock],
         collector: ResearchCollector,
         writer: ReportWriter,
+        ratings: RatingStore | None = None,
+        model: str = "",
     ) -> None:
-        self._crew_factory = crew_factory
-        self._inputs_builder = inputs_builder
-        self._resolver = resolver
+        self._analyze = analyze
+        self._resolve = resolve
         self._collector = collector
         self._writer = writer
+        self._ratings = ratings
+        self._model = model
 
-    def resolve(self, target: str | AssetRef) -> AssetRef:
-        """Identify the asset; holdings from Open Finance are enriched with registry data."""
-        if isinstance(target, str):
-            return self._resolver.resolve(target)
-        try:
-            resolved = self._resolver.resolve(target.identifier)
-        except InvestReporterError as exc:
-            logger.info("Could not enrich %s, using holding data as-is: %s", target.identifier, exc)
-            return target
-        # Keep the class reported by the institution: it is more reliable than conventions.
-        return replace(
-            target,
-            name=target.name or resolved.name,
-            cnpj=target.cnpj or resolved.cnpj,
-            foreign_ticker=target.foreign_ticker or resolved.foreign_ticker,
-        )
-
-    def collect(self, target: str | AssetRef) -> ResearchDossier:
+    def collect(self, ticker: str) -> ResearchDossier:
         """Everything the agents will read, gathered without any LLM call."""
-        return self._collector.collect(self.resolve(target))
+        return self._collector.collect(self._resolve(ticker))
 
-    def generate(self, target: str | AssetRef, today: date | None = None) -> Path:
+    def generate(self, ticker: str, today: date | None = None) -> Path:
         today = today or date.today()
-        dossier = self.collect(target)
-        result = self._crew_factory().kickoff(inputs=self._inputs_builder(dossier, today))
-        return self._writer.write(dossier.asset.report_name, result.raw)
+        dossier = self.collect(ticker)
+        analysis = self._analyze(dossier, today)
+        path = self._writer.write(dossier.stock.report_name, analysis.report)
+        if self._ratings is not None:
+            self._remember(dossier, analysis, today)
+        return path
+
+    def _remember(self, dossier: ResearchDossier, analysis: Analysis, today: date) -> None:
+        if analysis.verdict is None:
+            logger.warning("%s: no structured verdict, rating not saved", dossier.stock.ticker)
+            return
+        metrics = dict(dossier.fundamentals.metrics) if dossier.fundamentals else {}
+        self._ratings.save_rating(
+            Rating(
+                day=today,
+                ticker=dossier.stock.ticker,
+                verdict=analysis.verdict,
+                price=metrics.get("currentPrice"),
+                metrics=metrics,
+                model=self._model,
+                report=analysis.report,
+            )
+        )

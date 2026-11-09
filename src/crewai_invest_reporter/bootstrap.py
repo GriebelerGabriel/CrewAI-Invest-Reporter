@@ -1,7 +1,7 @@
 """Composition root: the single place where concrete implementations are wired together.
 
-Components are created lazily and shared, so expensive state (CVM registries, filing
-indexes, HTTP sessions, fetched pages) is built once per run even for many assets.
+Components are created lazily and shared, so expensive state (CVM registry and filing index,
+HTTP sessions) is built once per run even when handling many stocks.
 """
 
 from __future__ import annotations
@@ -10,28 +10,29 @@ from functools import cached_property
 
 from crewai import LLM, BaseLLM
 
-from crewai_invest_reporter.crews.asset_report.crew import AssetReportCrew, asset_report_inputs
-from crewai_invest_reporter.domain.ports import PortfolioProvider
-from crewai_invest_reporter.providers.assets import OfficialFilingsRouter, RegistryAssetResolver
-from crewai_invest_reporter.providers.cache import DiskCachedFetcher
+from crewai_invest_reporter.crews.asset_report.crew import analyze
+from crewai_invest_reporter.crews.daily_news.crew import summarize
 from crewai_invest_reporter.providers.cvm import (
     CvmCompanyFilingsProvider,
     CvmCompanyRegistry,
-    CvmFiiRegistry,
     CvmOpenDataClient,
 )
-from crewai_invest_reporter.providers.documents import CachedDocumentReader, HttpDocumentReader
-from crewai_invest_reporter.providers.fundosnet import FundosNetFilingsProvider
+from crewai_invest_reporter.providers.database import Database
+from crewai_invest_reporter.providers.documents import HttpDocumentReader
 from crewai_invest_reporter.providers.google_news import GoogleNewsProvider
-from crewai_invest_reporter.providers.http import build_session
 from crewai_invest_reporter.providers.investidor10 import Investidor10Provider
-from crewai_invest_reporter.providers.pluggy import PluggyPortfolioProvider
-from crewai_invest_reporter.providers.sec_edgar import SecEdgarFilingsProvider
-from crewai_invest_reporter.providers.wallet import ManualPortfolioProvider, WalletFile
+from crewai_invest_reporter.providers.smtp import SmtpMailer
+from crewai_invest_reporter.services.daily import DailyDigestService
 from crewai_invest_reporter.services.report_writer import ReportWriter
 from crewai_invest_reporter.services.reporting import AssetReportService
 from crewai_invest_reporter.services.research import ResearchCollector
+from crewai_invest_reporter.services.stocks import StockResolver
+from crewai_invest_reporter.services.subscriptions import SubscriptionService
 from crewai_invest_reporter.settings import Settings
+from crewai_invest_reporter.watchlist import read_watchlist
+
+# CVM's daily datasets are refreshed often enough for a morning run to see yesterday's filings.
+CVM_CACHE_SECONDS = 6 * 60 * 60
 
 
 class Container:
@@ -41,67 +42,33 @@ class Container:
     # --- providers -----------------------------------------------------------------------
 
     @cached_property
-    def fundamentals(self) -> Investidor10Provider:
-        return Investidor10Provider(timeout=self.settings.http_timeout_seconds)
-
-    @cached_property
     def _cvm(self) -> CvmOpenDataClient:
-        return CvmOpenDataClient.with_cache(self.settings.cache_dir)
+        return CvmOpenDataClient.with_cache(self.settings.cache_dir, ttl_seconds=CVM_CACHE_SECONDS)
 
     @cached_property
-    def _companies(self) -> CvmCompanyRegistry:
-        return CvmCompanyRegistry(self._cvm)
+    def resolver(self) -> StockResolver:
+        return StockResolver(CvmCompanyRegistry(self._cvm))
 
     @cached_property
-    def _fiis(self) -> CvmFiiRegistry:
-        return CvmFiiRegistry(self._cvm)
+    def database(self) -> Database:
+        return Database(self.settings.database_file)
 
-    @cached_property
-    def resolver(self) -> RegistryAssetResolver:
-        return RegistryAssetResolver(
-            self._companies, self._fiis, bdr_underlying=self.fundamentals.underlying_ticker
-        )
+    def tickers(self) -> list[str]:
+        return read_watchlist(self.settings.watchlist_file)
 
-    def asset_suggestions(self) -> list[tuple[str, str]]:
-        """(ticker, name) of every listed company and FII, for the wallet page."""
-        entries = {**self._fiis.tickers(), **self._companies.tickers()}
-        return sorted((ticker, entry.name) for ticker, entry in entries.items())
-
-    @cached_property
-    def filings(self) -> OfficialFilingsRouter:
-        sec_session = build_session({"User-Agent": self.settings.sec_user_agent})
-        return OfficialFilingsRouter(
-            company_filings=CvmCompanyFilingsProvider(self._cvm),
-            fund_filings=FundosNetFilingsProvider(),
-            foreign_filings=SecEdgarFilingsProvider(
-                DiskCachedFetcher(self.settings.cache_dir / "sec", session=sec_session),
-                session=sec_session,
-            ),
-        )
+    def choices(self) -> list[tuple[str, str]]:
+        """(ticker, company name) offered on the sign-up page; names come from past digests."""
+        names = self.database.company_names()
+        return [(ticker, names.get(ticker, "")) for ticker in self.tickers()]
 
     @cached_property
     def collector(self) -> ResearchCollector:
+        timeout = self.settings.http_timeout_seconds
         return ResearchCollector(
-            news=GoogleNewsProvider(timeout=self.settings.http_timeout_seconds),
-            fundamentals=self.fundamentals,
-            filings=self.filings,
-            documents=CachedDocumentReader(
-                HttpDocumentReader(
-                    domain_headers={"sec.gov": {"User-Agent": self.settings.sec_user_agent}}
-                )
-            ),
-        )
-
-    @cached_property
-    def wallet(self) -> WalletFile:
-        return WalletFile(self.settings.wallet_file)
-
-    def portfolio_provider(self) -> PortfolioProvider:
-        if self.settings.wallet_source == "pluggy":
-            return PluggyPortfolioProvider.from_settings(self.settings.pluggy)
-        return ManualPortfolioProvider(
-            self.wallet,
-            quote=lambda ticker: self.fundamentals.fetch(ticker).metrics["currentPrice"],
+            news=GoogleNewsProvider(timeout=timeout),
+            fundamentals=Investidor10Provider(timeout=timeout),
+            filings=CvmCompanyFilingsProvider(self._cvm),
+            documents=HttpDocumentReader(),
         )
 
     # --- LLM -----------------------------------------------------------------------------
@@ -126,18 +93,40 @@ class Container:
             default_headers={"x-bf-vk": config.bifrost_api_key},
         )
 
-    # --- crews and services --------------------------------------------------------------
+    @property
+    def model_name(self) -> str:
+        config = self.settings.llm
+        return config.bifrost_model if config.uses_bifrost else (config.model or "crewai-default")
+
+    # --- services ------------------------------------------------------------------------
 
     @cached_property
-    def writer(self) -> ReportWriter:
-        return ReportWriter(self.settings.reports_dir)
-
-    @cached_property
-    def asset_service(self) -> AssetReportService:
+    def report_service(self) -> AssetReportService:
         return AssetReportService(
-            crew_factory=lambda: AssetReportCrew(llm=self.llm).crew(),
-            inputs_builder=asset_report_inputs,
-            resolver=self.resolver,
+            analyze=lambda dossier, today: analyze(dossier, today, llm=self.llm),
+            resolve=self.resolver.resolve,
             collector=self.collector,
-            writer=self.writer,
+            writer=ReportWriter(self.settings.reports_dir),
+            ratings=self.database,
+            model=self.model_name,
+        )
+
+    @cached_property
+    def daily_digests(self) -> DailyDigestService:
+        return DailyDigestService(
+            store=self.database,
+            resolve=self.resolver.resolve,
+            collector=self.collector,
+            summarize=lambda dossier, day, days, change: summarize(
+                dossier, day, days, change, llm=self.llm
+            ),
+        )
+
+    @cached_property
+    def subscriptions(self) -> SubscriptionService:
+        return SubscriptionService(
+            db=self.database,
+            mailer=SmtpMailer(self.settings.mail.require()),
+            tickers=self.tickers,
+            public_url=self.settings.public_url,
         )

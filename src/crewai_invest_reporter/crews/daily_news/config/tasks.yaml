@@ -1,0 +1,29 @@
+daily_summary_task:
+  description: >
+    Today is {today}. Write the morning briefing on {ticker} ({company}): what is new since
+    the previous briefing, {days} day(s) ago.
+
+    Price: {price_line}
+
+    News headlines (Google News; headlines only):
+    {news_items}
+
+    New documents the company filed with CVM (excerpts; "truncated": true means only the
+    beginning is included):
+    {new_documents}
+
+    Rules:
+    - Write in Brazilian Portuguese (pt-BR), 2 to 5 bullet points starting with "- ", the most
+      important first, each one or two sentences.
+    - Use only facts written above and quote figures exactly. Do not invent or infer anything.
+    - Prefer the official documents; mention a document by its title.
+    - Ignore low-signal headlines: quote recaps, "quanto renderia" pieces, and market roundups
+      that only list {ticker} among many stocks.
+    - Never recommend buying, selling or holding, and give no price targets or opinions of
+      your own. An analyst's recommendation reported in the news may be mentioned, saying
+      who made it.
+    - If nothing above is relevant to {ticker}, answer exactly: Sem novidades relevantes.
+  expected_output: >
+    2 to 5 plain-text bullet points in pt-BR (no headings, no code fences), or exactly
+    "Sem novidades relevantes."
+  agent: news_writer

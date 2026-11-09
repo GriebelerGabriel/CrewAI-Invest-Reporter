@@ -1,18 +1,16 @@
 [project]
 name = "crewai_invest_reporter"
 version = "0.1.0"
-description = "AI-agent investment reports for the stocks and funds in your Nubank/NuInvest wallet (Open Finance)"
+description = "Daily AI news digest by email, and investment reports, for a fixed list of B3 stocks"
 authors = [{ name = "Gabriel Griebeler", email = "gabrielgriebeler98@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "beautifulsoup4>=4.12.0",
     "crewai>=1.15.28,<2",
-    "defusedxml>=0.7",
     "feedparser>=6.0.0",
     "flask>=3.0",
     "lxml>=4.9.0",
-    "openpyxl>=3.1",
     "pypdf>=5.0.0",
     "python-dotenv>=1.0.0",
     "requests>=2.31.0",

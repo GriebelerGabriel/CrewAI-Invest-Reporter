@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from crewai_invest_reporter.domain.errors import ProviderError
-from crewai_invest_reporter.domain.models import AssetClass, AssetRef, Filing, NewsItem
+from crewai_invest_reporter.domain.models import Filing, NewsItem, Stock
 from crewai_invest_reporter.services.research import (
     ResearchCollector,
     excerpt,
@@ -12,40 +12,38 @@ from crewai_invest_reporter.services.research import (
 )
 from tests.fakes import FakeDocuments, FakeFilings, FakeFundamentals, FakeNews
 
-TODAY = date(2026, 10, 17)
-MXRF = AssetRef("MXRF11", AssetClass.REAL_ESTATE_FUND, "Maxi Renda", "97521225000125")
+PETR = Stock("PETR4", "PETROBRAS", "33000167000101")
 
 
 def _filing(title, category, day, n=0):
-    return Filing(title, category, date(2026, 10, day), f"https://doc/{title}/{n}", "FNET")
+    return Filing(title, category, date(2026, 10, day), f"https://doc/{title}/{n}", "CVM (IPE)")
 
 
-FII_FILINGS = [
-    _filing("Relatório Gerencial", "Relatórios", 2),
-    _filing("Relatório Gerencial", "Relatórios", 1, 1),  # older: only the newest is read
+FILINGS = [
+    _filing("Press-release 3T26", "Dados Econômico-Financeiros", 2),
+    _filing("ITR - Demonstrações Financeiras", "Dados Econômico-Financeiros", 5),  # not preferred
     _filing("Fato Relevante", "Fato Relevante", 10),
     _filing("Fato Relevante", "Fato Relevante", 9, 1),
     _filing("Fato Relevante", "Fato Relevante", 8, 2),  # third one exceeds the rule limit
-    _filing("Rendimentos e Amortizações", "Aviso aos Cotistas - Estruturado", 15),
-    _filing("Informe Mensal Estruturado", "Informes Periódicos", 15),
-    _filing("Ata de Assembleia", "Assembleia", 16),  # no rule matches
+    _filing("Juros sobre capital próprio", "Aviso aos Acionistas", 15),
+    _filing("Novo diretor", "Comunicado ao Mercado", 15),
+    _filing("Ata", "Reunião da Administração", 16),  # no rule matches
 ]
 
 
 def test_selection_rules_are_deterministic_and_bounded():
-    chosen = select_filings(list(reversed(FII_FILINGS)), AssetClass.REAL_ESTATE_FUND)
+    chosen = select_filings(list(reversed(FILINGS)))
     assert [(f.title, f.delivered_on.day, rule.max_chars) for f, rule in chosen] == [
-        ("Relatório Gerencial", 2, 15_000),
+        ("Press-release 3T26", 2, 15_000),
         ("Fato Relevante", 10, 5_000),
         ("Fato Relevante", 9, 5_000),
-        ("Rendimentos e Amortizações", 15, 3_000),
-        ("Informe Mensal Estruturado", 15, 5_000),
+        ("Juros sobre capital próprio", 15, 3_000),
+        ("Novo diretor", 15, 3_000),
     ]
-    assert select_filings(FII_FILINGS, AssetClass.REAL_ESTATE_FUND) == chosen
-    assert select_filings(FII_FILINGS, AssetClass.ETF) == []
+    assert select_filings(FILINGS) == chosen
 
 
-def test_stock_rule_prefers_press_release_over_newer_financial_statements():
+def test_results_rule_prefers_press_release_over_newer_financial_statements():
     filings = [
         Filing(
             "ITR - Demonstrações Financeiras",
@@ -62,10 +60,8 @@ def test_stock_rule_prefers_press_release_over_newer_financial_statements():
             "CVM",
         ),
     ]
-    chosen = select_filings(filings, AssetClass.STOCK)
-    assert [f.url for f, _ in chosen] == ["https://d/release"]
-    only_itr = select_filings(filings[:1], AssetClass.STOCK)
-    assert [f.url for f, _ in only_itr] == ["https://d/itr"]
+    assert [f.url for f, _ in select_filings(filings)] == ["https://d/release"]
+    assert [f.url for f, _ in select_filings(filings[:1])] == ["https://d/itr"]
 
 
 def test_excerpt_normalizes_whitespace_and_cuts_on_word_boundary():
@@ -79,7 +75,7 @@ def _collector(**overrides):
     deps = {
         "news": FakeNews(),
         "fundamentals": FakeFundamentals(),
-        "filings": FakeFilings(filings=FII_FILINGS),
+        "filings": FakeFilings(filings=FILINGS),
         "documents": FakeDocuments(words=2000),
     }
     deps.update(overrides)
@@ -88,19 +84,19 @@ def _collector(**overrides):
 
 def test_collects_news_fundamentals_and_selected_documents():
     documents = FakeDocuments(words=2000)
-    dossier = _collector(documents=documents).collect(MXRF)
+    dossier = _collector(documents=documents).collect(PETR)
 
-    assert [d.filing.title for d in dossier.documents][:1] == ["Relatório Gerencial"]
+    assert dossier.documents[0].filing.title == "Press-release 3T26"
     assert len(dossier.documents) == 5
     assert dossier.documents[0].truncated
     assert len(dossier.documents[0].text) <= 15_000
     assert [f.title for f in dossier.available_filings] == [
-        "Relatório Gerencial",
+        "ITR - Demonstrações Financeiras",
         "Fato Relevante",
-        "Ata de Assembleia",
+        "Ata",
     ]
-    assert dossier.fundamentals.ticker == "MXRF11"
-    assert dossier.news[0].title == "Notícia sobre MXRF11"
+    assert dossier.fundamentals.ticker == "PETR4"
+    assert dossier.news[0].title == "Notícia sobre PETR4"
     assert dossier.gaps == ()
     assert len(documents.calls) == 5
 
@@ -109,42 +105,33 @@ def test_failures_become_data_gaps_instead_of_errors():
     dossier = _collector(
         news=FakeNews(error=ProviderError("rss down")),
         fundamentals=FakeFundamentals(error=ProviderError("site down")),
-        filings=FakeFilings(error=ProviderError("fnet down")),
-    ).collect(MXRF)
+        filings=FakeFilings(error=ProviderError("cvm down")),
+    ).collect(PETR)
     assert dossier.documents == ()
-    joined = " | ".join(dossier.gaps)
-    assert "rss down" in joined and "site down" in joined and "fnet down" in joined
+    assert dossier.gaps == (
+        "Notícias: rss down",
+        "Fundamentos: site down",
+        "Documentos oficiais: cvm down",
+    )
 
 
 def test_unreadable_documents_are_kept_with_their_error():
-    dossier = _collector(documents=FakeDocuments(error=ProviderError("HTTP 500"))).collect(MXRF)
+    dossier = _collector(documents=FakeDocuments(error=ProviderError("HTTP 500"))).collect(PETR)
     assert all(d.error == "HTTP 500" for d in dossier.documents)
     assert dossier.to_dict()["documents"][0]["error"] == "HTTP 500"
 
 
-def test_unlisted_funds_skip_market_data_and_search_news_by_name():
-    fund = AssetRef("11222333000181", AssetClass.MUTUAL_FUND, "Fundo XP", "11222333000181")
-    news, fundamentals = FakeNews(), FakeFundamentals()
-    dossier = _collector(news=news, fundamentals=fundamentals, filings=FakeFilings([])).collect(
-        fund
-    )
-    assert fundamentals.calls == []
-    assert news.calls[0][0] == '"Fundo XP"'
-    assert any("não aplicável" in gap for gap in dossier.gaps)
+def test_stock_without_cnpj_skips_filings_with_a_gap():
+    filings = FakeFilings()
+    dossier = _collector(filings=filings).collect(Stock("PETR4"))
+    assert filings.calls == []
+    assert any("CNPJ da empresa desconhecido" in gap for gap in dossier.gaps)
 
 
-def test_bdr_news_also_searches_the_us_ticker():
-    news = FakeNews(items=[])
-    _collector(news=news, filings=FakeFilings([])).collect(
-        AssetRef("AAPL34", AssetClass.BDR, foreign_ticker="AAPL")
-    )
-    assert [c[0] for c in news.calls] == ["AAPL34", "AAPL stock"]
-
-
-def test_assets_without_official_filings_are_reported_as_a_gap():
-    dossier = _collector(filings=FakeFilings([])).collect(AssetRef("BOVA11", AssetClass.ETF))
+def test_no_recent_filings_is_reported_as_a_gap():
+    dossier = _collector(filings=FakeFilings([])).collect(PETR)
     assert dossier.documents == ()
-    assert any("nenhuma fonte oficial" in gap for gap in dossier.gaps)
+    assert any("nenhum documento na CVM" in gap for gap in dossier.gaps)
 
 
 HEADER = "www.petrobras.com.br/ri Para mais informações: Relações com Investidores"
@@ -176,7 +163,7 @@ def test_news_is_sorted_newest_first_with_unknown_dates_last():
         NewsItem("sem data", "S", "", "u2"),
         NewsItem("recente", "S", "Tue, 13 Oct 2026 08:00:00 GMT", "u3"),
     ]
-    dossier = _collector(news=FakeNews(items=items)).collect(MXRF)
+    dossier = _collector(news=FakeNews(items=items)).collect(PETR)
     assert [n.title for n in dossier.news] == ["recente", "antiga", "sem data"]
 
 
@@ -190,3 +177,21 @@ def test_strip_boilerplate_removes_forward_looking_notice_only_when_complete():
     ]
     unterminated = "Este relatório pode conter previsões sobre o futuro.\nLucro de R$ 32 bi"
     assert strip_boilerplate([unterminated]) == [unterminated]
+
+
+def test_collect_new_keeps_only_unseen_items_and_reads_new_filings():
+    news_items = [
+        NewsItem("já enviada", "S", "", "https://n/old"),
+        NewsItem("nova", "S", "", "https://n/new"),
+    ]
+    news, filings = FakeNews(items=news_items), FakeFilings(filings=FILINGS)
+    seen = frozenset({"https://n/old", FILINGS[0].url})
+    dossier = _collector(news=news, filings=filings).collect_new(PETR, days=3, seen=seen)
+
+    assert [n.title for n in dossier.news] == ["nova"]
+    assert news.calls == [("PETR4", 15, 3)]
+    assert filings.calls == [("PETR4", 3, 50)]
+    # Up to 3 new filings, each cut to the daily budget; the seen one is skipped.
+    assert [d.filing.url for d in dossier.documents] == [f.url for f in FILINGS[1:4]]
+    assert all(len(d.text) <= 4_000 for d in dossier.documents)
+    assert dossier.fundamentals.ticker == "PETR4"

@@ -12,3 +12,7 @@ class ProviderError(InvestReporterError):
 
 class ConfigurationError(InvestReporterError):
     """Raised when required settings (e.g. API credentials) are missing or invalid."""
+
+
+class SubscriptionError(InvestReporterError, ValueError):
+    """Raised when a sign-up form is invalid (bad email, no stock chosen...)."""

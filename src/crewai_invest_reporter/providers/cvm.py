@@ -2,7 +2,6 @@
 
 * ``CvmOpenDataClient`` reads the yearly zip datasets (cached on disk for a day).
 * ``CvmCompanyRegistry`` maps B3 tickers to companies (FCA "valor mobiliário" dataset).
-* ``CvmFiiRegistry`` maps FII tickers to funds (FII monthly report, via the ISIN code).
 * ``CvmCompanyFilingsProvider`` lists a company's IPE filings: fatos relevantes, comunicados,
   earnings releases ("Dados Econômico-Financeiros"), dividend notices...
 """
@@ -21,7 +20,7 @@ from pathlib import Path
 
 from crewai_invest_reporter.domain.cnpj import cnpj_digits
 from crewai_invest_reporter.domain.errors import ProviderError
-from crewai_invest_reporter.domain.models import AssetRef, Filing
+from crewai_invest_reporter.domain.models import Filing, Stock
 from crewai_invest_reporter.providers.cache import DiskCachedFetcher
 
 logger = logging.getLogger(__name__)
@@ -33,8 +32,6 @@ FCA_ZIP = "CIA_ABERTA/DOC/FCA/DADOS/fca_cia_aberta_{year}.zip"
 FCA_SECURITIES_CSV = "fca_cia_aberta_valor_mobiliario_{year}.csv"
 IPE_ZIP = "CIA_ABERTA/DOC/IPE/DADOS/ipe_cia_aberta_{year}.zip"
 IPE_CSV = "ipe_cia_aberta_{year}.csv"
-FII_ZIP = "FII/DOC/INF_MENSAL/DADOS/inf_mensal_fii_{year}.zip"
-FII_GENERAL_CSV = "inf_mensal_fii_geral_{year}.csv"
 
 # IPE categories that carry investment-relevant information (others are mostly governance
 # paperwork such as insider position reports or committee bylaws).
@@ -112,10 +109,6 @@ class CvmCompanyRegistry:
     def lookup(self, ticker: str) -> RegistryEntry | None:
         return self._by_ticker.get(ticker.upper())
 
-    def tickers(self) -> dict[str, RegistryEntry]:
-        """Every listed company ticker, e.g. for autocompletion."""
-        return dict(self._by_ticker)
-
     @cached_property
     def _by_ticker(self) -> dict[str, RegistryEntry]:
         entries: dict[str, RegistryEntry] = {}
@@ -128,45 +121,6 @@ class CvmCompanyRegistry:
             if ticker and cnpj:
                 entries[ticker] = RegistryEntry(cnpj, (row.get("Nome_Empresarial") or "").strip())
         return entries
-
-
-class CvmFiiRegistry:
-    """FII ticker root (``MXRF`` of ``MXRF11``) -> fund, using the ISIN ``BR`` + root + ``CTF``."""
-
-    def __init__(self, client: CvmOpenDataClient, today: Callable[[], date] = date.today) -> None:
-        self._client = client
-        self._today = today
-
-    def lookup(self, ticker: str) -> RegistryEntry | None:
-        return self._by_root.get(ticker[:4].upper())
-
-    def lookup_cnpj(self, cnpj: str) -> RegistryEntry | None:
-        return self._by_cnpj.get(cnpj)
-
-    def tickers(self) -> dict[str, RegistryEntry]:
-        """Every FII with its usual ``11`` ticker (MXRF -> MXRF11), e.g. for autocompletion."""
-        return {f"{root}11": entry for root, entry in self._entries}
-
-    @cached_property
-    def _by_root(self) -> dict[str, RegistryEntry]:
-        return {root: entry for root, entry in self._entries}
-
-    @cached_property
-    def _by_cnpj(self) -> dict[str, RegistryEntry]:
-        return {entry.cnpj: entry for _, entry in self._entries}
-
-    @cached_property
-    def _entries(self) -> list[tuple[str, RegistryEntry]]:
-        entries: dict[str, tuple[str, RegistryEntry]] = {}
-        for row in self._client.iter_rows_for_years(
-            FII_ZIP, FII_GENERAL_CSV, sorted(_recent_years(self._today()))
-        ):
-            isin = (row.get("Codigo_ISIN") or "").strip().upper()
-            cnpj = cnpj_digits(row.get("CNPJ_Fundo_Classe"))
-            if len(isin) == 12 and isin.startswith("BR") and isin[6:9] == "CTF" and cnpj:
-                name = (row.get("Nome_Fundo_Classe") or "").strip()
-                entries[isin[2:6]] = (isin[2:6], RegistryEntry(cnpj, name))
-        return list(entries.values())
 
 
 class CvmCompanyFilingsProvider:
@@ -184,11 +138,11 @@ class CvmCompanyFilingsProvider:
         self._today = today
         self._categories = categories
 
-    def list_filings(self, asset: AssetRef, *, days: int = 180, limit: int = 20) -> list[Filing]:
-        if not asset.cnpj:
+    def list_filings(self, stock: Stock, *, days: int = 180, limit: int = 20) -> list[Filing]:
+        if not stock.cnpj:
             return []
         since = self._today() - timedelta(days=days)
-        filings = [f for f in self._by_cnpj.get(asset.cnpj, []) if f.delivered_on >= since]
+        filings = [f for f in self._by_cnpj.get(stock.cnpj, []) if f.delivered_on >= since]
         filings.sort(key=lambda f: f.delivered_on, reverse=True)
         return filings[:limit]
 

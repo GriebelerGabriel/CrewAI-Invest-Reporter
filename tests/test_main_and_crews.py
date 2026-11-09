@@ -1,93 +1,116 @@
 from __future__ import annotations
 
+import re
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
 from crewai_invest_reporter import main
-
-
-def test_format_holdings(sample_portfolio):
-    table = main._format_holdings(sample_portfolio)
-    assert table.splitlines()[1].startswith("PETR4")
-    assert "5,300.00" in table.splitlines()[-1]
-
-
-def test_holdings_from_pluggy_without_credentials_fails_cleanly(monkeypatch, capsys):
-    monkeypatch.setenv("WALLET_SOURCE", "pluggy")
-    for var in ("PLUGGY_CLIENT_ID", "PLUGGY_CLIENT_SECRET", "PLUGGY_ITEM_IDS"):
-        monkeypatch.setenv(var, "")
-    assert main.main(["holdings"]) == 1
-    assert "Open Finance is not configured" in capsys.readouterr().err
-
-
-def test_holdings_from_an_empty_wallet_points_to_the_page(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("WALLET_SOURCE", "manual")
-    monkeypatch.setenv("WALLET_FILE", str(tmp_path / "wallet.json"))
-    assert main.main(["holdings"]) == 0
-    assert "wallet page" in capsys.readouterr().out
-
-
-def test_unknown_wallet_source_fails_cleanly(monkeypatch, capsys):
-    monkeypatch.setenv("WALLET_SOURCE", "excel")
-    assert main.main(["holdings"]) == 1
-    assert "WALLET_SOURCE must be one of" in capsys.readouterr().err
-
-
-def test_invalid_identifier_fails_cleanly(capsys):
-    assert main.main(["asset", "../x"]) == 1
-    assert "Not a B3 ticker nor a CNPJ" in capsys.readouterr().err
+from crewai_invest_reporter.crews.asset_report.crew import (
+    AssetReportCrew,
+    VerdictRecord,
+    asset_report_inputs,
+    read_analysis,
+)
+from crewai_invest_reporter.crews.daily_news.crew import DailyNewsCrew, daily_news_inputs
+from crewai_invest_reporter.domain.errors import InvalidTickerError
+from crewai_invest_reporter.domain.models import (
+    DocumentExcerpt,
+    Filing,
+    Fundamentals,
+    NewsItem,
+    ResearchDossier,
+    Stock,
+    Verdict,
+)
 
 
 @pytest.fixture
 def fake_llm_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("BIFROST_BASE_URL", "")  # also shadows a local .env
 
 
 def _dossier():
-    from crewai_invest_reporter.domain.models import (
-        AssetClass,
-        AssetRef,
-        DocumentExcerpt,
-        Filing,
-        Fundamentals,
-        NewsItem,
-        ResearchDossier,
-    )
-
-    asset = AssetRef("MXRF11", AssetClass.REAL_ESTATE_FUND, "Maxi Renda", "97521225000125")
-    filing = Filing("Relatório Gerencial", "Relatórios", date(2026, 10, 2), "https://f/1", "FNET")
+    filing = Filing("Fato Relevante", "Fato Relevante", date(2026, 10, 2), "https://f/1", "CVM")
     return ResearchDossier(
-        asset=asset,
-        news=(NewsItem("MXRF11 paga dividendos {x}", "Valor", "hoje", "https://n/1"),),
-        fundamentals=Fundamentals("MXRF11", "https://i10", {"dividendYield": 0.12}, {}),
-        documents=(DocumentExcerpt(filing, text='Vacância de 0% {"json": true}'),),
+        stock=Stock("PETR4", "PETROBRAS", "33000167000101"),
+        news=(NewsItem("PETR4 paga dividendos {x}", "Valor", "hoje", "https://n/1"),),
+        fundamentals=Fundamentals(
+            "PETR4", "https://i10", {"dividendYield": 0.12, "currentPrice": 38.45}, {}
+        ),
+        documents=(DocumentExcerpt(filing, text='Lucro de R$ 32 bi {"json": true}'),),
         gaps=("Notícias: poucas",),
     )
 
 
-def test_asset_crew_has_no_tools(fake_llm_key):
-    from crewai_invest_reporter.crews.asset_report.crew import AssetReportCrew
+def test_invalid_ticker_fails_cleanly(capsys):
+    assert main.main(["dossier", "../x"]) == 1
+    assert "Invalid B3 ticker" in capsys.readouterr().err
 
+
+def test_report_without_watchlist_fails_cleanly(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("WATCHLIST_FILE", str(tmp_path / "missing.txt"))
+    assert main.main(["report"]) == 1
+    assert "missing.txt not found" in capsys.readouterr().err
+
+
+class _FakeService:
+    def __init__(self, fail=()):
+        self.fail, self.calls = fail, []
+
+    def generate(self, ticker):
+        self.calls.append(ticker)
+        if ticker in self.fail:
+            raise self.fail[ticker]
+        return f"reports/{ticker}_investment_report.md"
+
+
+def test_report_runs_the_whole_watchlist_and_keeps_going_after_failures(
+    monkeypatch, tmp_path, capsys, fake_llm_key
+):
+    watchlist = tmp_path / "watchlist.txt"
+    watchlist.write_text("PETR4\nXPTO3\nVALE3\n", encoding="utf-8")
+    monkeypatch.setenv("WATCHLIST_FILE", str(watchlist))
+    service = _FakeService(
+        fail={"XPTO3": InvalidTickerError("XPTO3 is not listed"), "VALE3": RuntimeError("llm")}
+    )
+    monkeypatch.setattr(main.Container, "report_service", service)
+
+    assert main.main(["report"]) == 1
+    assert service.calls == ["PETR4", "XPTO3", "VALE3"]
+    out, err = capsys.readouterr()
+    assert "PETR4: report written to" in out
+    assert "XPTO3: error: XPTO3 is not listed" in err
+    assert "Failed: XPTO3, VALE3" in err
+
+
+def test_report_with_tickers_ignores_the_watchlist(monkeypatch, tmp_path, fake_llm_key):
+    monkeypatch.setenv("WATCHLIST_FILE", str(tmp_path / "missing.txt"))
+    service = _FakeService()
+    monkeypatch.setattr(main.Container, "report_service", service)
+    assert main.main(["report", "BBAS3"]) == 0
+    assert service.calls == ["BBAS3"]
+
+
+def test_crew_has_no_tools(fake_llm_key):
     crew = AssetReportCrew(verbose=False).crew()
     assert [t.name for t in crew.tasks] == [
         "filings_analysis_task",
         "news_synthesis_task",
         "fundamentals_task",
         "investment_rating_task",
+        "verdict_task",
     ]
     assert all(not agent.tools for agent in crew.agents)
+    assert crew.tasks[-1].output_pydantic is VerdictRecord
 
 
-def test_asset_report_inputs_interpolate_every_task(fake_llm_key):
-    import re
-
-    from crewai_invest_reporter.crews.asset_report.crew import AssetReportCrew, asset_report_inputs
-
+def test_inputs_interpolate_every_task(fake_llm_key):
     inputs = asset_report_inputs(_dossier(), date(2026, 10, 17))
-    assert "P/L does not apply" in inputs["analysis_guidelines"]
-    assert inputs["asset_class"] == "Fundo Imobiliário (FII)"
-    assert "Vacância de 0%" in inputs["official_documents"]
+    assert inputs["company"] == "PETROBRAS"
+    assert "Lucro de R$ 32 bi" in inputs["official_documents"]
     assert "dividendYield" in inputs["fundamentals_data"]
 
     crew = AssetReportCrew(verbose=False).crew()
@@ -96,11 +119,41 @@ def test_asset_report_inputs_interpolate_every_task(fake_llm_key):
         crew_task.interpolate_inputs_and_add_conversation_history(inputs)
         unresolved = placeholder.findall(crew_task.description.replace("{x}", ""))
         assert not unresolved, (crew_task.name, unresolved)
-    assert "Vacância de 0%" in crew.tasks[0].description
+    assert "Lucro de R$ 32 bi" in crew.tasks[0].description
 
 
 def test_format_dossier_shows_documents_and_gaps():
     text = main._format_dossier(_dossier())
-    assert "REAL_ESTATE_FUND" in text
-    assert "Relatório Gerencial" in text
+    assert text.startswith("PETR4 (PETROBRAS) | CNPJ 33000167000101")
+    assert "Fato Relevante" in text
     assert "! Notícias: poucas" in text
+
+
+def test_read_analysis_returns_the_report_and_the_parsed_verdict():
+    record = VerdictRecord(
+        rating="Good to invest", probability_good=65, probability_loss=35, confidence="média"
+    )
+    outputs = [
+        SimpleNamespace(name="investment_rating_task", raw="```markdown\n# Relatório\n```"),
+        SimpleNamespace(name="verdict_task", raw="{}", pydantic=record),
+    ]
+    analysis = read_analysis(outputs)
+    assert analysis.report == "# Relatório"
+    assert analysis.verdict == Verdict("Good to invest", 65, 35, "média")
+
+    unparsed = read_analysis([outputs[0], SimpleNamespace(name="verdict_task", pydantic=None)])
+    assert (unparsed.report, unparsed.verdict) == ("# Relatório", None)
+
+
+def test_daily_news_inputs_interpolate_the_task(fake_llm_key):
+    inputs = daily_news_inputs(_dossier(), date(2026, 11, 9), days=3, price_change=-0.0123)
+    assert inputs["price_line"] == "R$ 38.45 (-1.23% desde o resumo anterior)"
+    assert inputs["days"] == "3"
+
+    crew = DailyNewsCrew().crew()
+    placeholder = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+    for crew_task in crew.tasks:
+        crew_task.interpolate_inputs_and_add_conversation_history(inputs)
+        unresolved = placeholder.findall(crew_task.description.replace("{x}", ""))
+        assert not unresolved, (crew_task.name, unresolved)
+    assert all(not agent.tools for agent in crew.agents)

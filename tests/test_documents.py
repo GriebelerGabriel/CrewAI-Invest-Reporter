@@ -7,13 +7,8 @@ import responses
 from pypdf import PdfWriter
 
 from crewai_invest_reporter.domain.errors import ProviderError
-from crewai_invest_reporter.providers.documents import (
-    CachedDocumentReader,
-    HttpDocumentReader,
-    UnsafeUrlError,
-)
+from crewai_invest_reporter.providers.documents import HttpDocumentReader, UnsafeUrlError
 from crewai_invest_reporter.providers.http import build_session
-from tests.fakes import FakeDocuments
 
 
 def _public(_host):
@@ -102,29 +97,3 @@ def test_enforces_size_limit_and_http_errors():
         _reader(max_bytes=1024).read("https://example.com/big")
     with pytest.raises(ProviderError, match="HTTP 404"):
         _reader().read("https://example.com/missing")
-
-
-def test_cached_reader_reuses_documents_and_evicts_oldest():
-    inner = FakeDocuments()
-    cached = CachedDocumentReader(inner, max_entries=2)
-    cached.read("a")
-    cached.read("a")
-    cached.read("b")
-    cached.read("c")  # evicts "a"
-    cached.read("a")
-    assert inner.calls == ["a", "b", "c", "a"]
-
-
-@responses.activate
-def test_domain_specific_headers_are_sent_only_to_that_domain():
-    responses.get(
-        "https://www.sec.gov/doc.htm",
-        body="<html><p>SEC</p></html>",
-        content_type="text/html",
-        match=[responses.matchers.header_matcher({"User-Agent": "me contact@x.com"})],
-    )
-    responses.get("https://other.example.com/doc", body="ok", content_type="text/plain")
-    reader = _reader(domain_headers={"sec.gov": {"User-Agent": "me contact@x.com"}})
-    assert reader.read("https://www.sec.gov/doc.htm").text == "SEC"
-    assert reader.read("https://other.example.com/doc").text == "ok"
-    assert responses.calls[1].request.headers["User-Agent"] != "me contact@x.com"

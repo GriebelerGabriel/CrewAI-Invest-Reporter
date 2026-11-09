@@ -1,4 +1,4 @@
-"""Disk cache for slowly changing public datasets (CVM open data, SEC ticker lists)."""
+"""Disk cache for slowly changing public datasets (CVM open data)."""
 
 from __future__ import annotations
 

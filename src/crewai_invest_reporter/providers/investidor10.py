@@ -1,9 +1,9 @@
-"""Fundamentals provider that scrapes public asset pages on investidor10.com.br.
+"""Fundamentals provider that scrapes public stock pages on investidor10.com.br.
 
 The module is split in two responsibilities:
 
 * ``Investidor10Parser`` turns page HTML into raw label -> text pairs (pure, easy to test);
-* ``Investidor10Provider`` resolves URLs, fetches pages and maps raw text to typed metrics.
+* ``Investidor10Provider`` fetches pages and maps raw text to typed metrics.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 
 from crewai_invest_reporter.domain.errors import ProviderError
 from crewai_invest_reporter.domain.models import Fundamentals
-from crewai_invest_reporter.domain.tickers import is_bdr, is_unit_like, normalize_ticker
+from crewai_invest_reporter.domain.tickers import normalize_ticker
 from crewai_invest_reporter.providers.http import BROWSER_HEADERS, build_session
 from crewai_invest_reporter.providers.parsing import parse_br_number, parse_br_percent
 
@@ -39,10 +39,6 @@ _TEXT_PATTERNS: dict[str, tuple[str, str]] = {
         "",
     ),
 }
-# BDR pages describe the underlying listing, e.g. "negociada na Nasdaq sob o ticker AAPL".
-_UNDERLYING_TICKER = re.compile(
-    r"(?:Nasdaq|NYSE|Nyse|bolsa americana)[^.]{0,60}?tickers?\s+([A-Z][A-Z.\-]{0,6})\b"
-)
 _DAILY_LIQUIDITY = re.compile(
     rf"Liquidez\s*Di[áa]ria\s*R\$\s*{_CURRENCY}\s*([MK])", re.IGNORECASE | re.DOTALL
 )
@@ -67,13 +63,6 @@ class Investidor10Parser:
         if liquidity:
             raw["Liquidez Diária"] = f"R$ {liquidity.group(1)} {liquidity.group(2)}"
         return raw
-
-    @staticmethod
-    def underlying_ticker(html: str) -> str | None:
-        """US ticker of the company behind a BDR page, if the page states it."""
-        text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
-        match = _UNDERLYING_TICKER.search(text)
-        return match.group(1).rstrip(".-") if match else None
 
     @staticmethod
     def _faq_answers(soup: BeautifulSoup) -> Iterable[str]:
@@ -104,57 +93,26 @@ class Investidor10Provider:
         self._session = session or build_session(BROWSER_HEADERS)
         self._parser = parser or Investidor10Parser()
         self._timeout = timeout
-        self._pages: dict[str, tuple[str, str]] = {}
 
     @staticmethod
-    def candidate_urls(ticker: str) -> list[str]:
-        """Investidor10 groups assets by category; try the most likely categories first.
-
-        A ``11`` suffix is ambiguous (FII, ETF or share unit such as TAEE11), so all three
-        categories are tried in order.
-        """
-        if is_bdr(ticker):
-            categories = ["bdrs"]
-        elif is_unit_like(ticker):
-            categories = ["fiis", "etfs", "acoes"]
-        else:
-            categories = ["acoes"]
-        return [f"{BASE_URL}/{category}/{ticker.lower()}/" for category in categories]
+    def page_url(ticker: str) -> str:
+        return f"{BASE_URL}/acoes/{ticker.lower()}/"
 
     def fetch(self, ticker: str) -> Fundamentals:
         papel = normalize_ticker(ticker)
-        url, html = self._fetch_page(papel)
-        raw = self._parser.parse(html)
-        return Fundamentals(ticker=papel, source_url=url, metrics=self._map_metrics(raw), raw=raw)
-
-    def underlying_ticker(self, bdr_ticker: str) -> str | None:
-        """For a BDR such as AAPL34 or M1TA34, the underlying US ticker (AAPL, META)."""
+        url = self.page_url(papel)
         try:
-            _, html = self._fetch_page(normalize_ticker(bdr_ticker))
-        except ProviderError:
-            return None
-        return self._parser.underlying_ticker(html)
-
-    def _fetch_page(self, papel: str) -> tuple[str, str]:
-        """First candidate page that has indicators; memoized because callers share pages."""
-        if papel in self._pages:
-            return self._pages[papel]
-        attempts: list[str] = []
-        for url in self.candidate_urls(papel):
-            try:
-                response = self._session.get(url, timeout=self._timeout)
-            except requests.RequestException as exc:
-                attempts.append(f"{url} -> {exc}")
-                continue
-            if response.status_code != 200:
-                attempts.append(f"{url} -> HTTP {response.status_code}")
-                continue
-            if not self._parser.parse(response.text):
-                attempts.append(f"{url} -> no indicators found")
-                continue
-            self._pages[papel] = (url, response.text)
-            return self._pages[papel]
-        raise ProviderError(f"investidor10 has no data for {papel}: {'; '.join(attempts)}")
+            response = self._session.get(url, timeout=self._timeout)
+        except requests.RequestException as exc:
+            raise ProviderError(f"investidor10 unreachable for {papel}: {exc}") from exc
+        if response.status_code != 200:
+            raise ProviderError(
+                f"investidor10 has no data for {papel}: HTTP {response.status_code}"
+            )
+        raw = self._parser.parse(response.text)
+        if not raw:
+            raise ProviderError(f"investidor10 has no data for {papel}: no indicators found")
+        return Fundamentals(ticker=papel, source_url=url, metrics=self._map_metrics(raw), raw=raw)
 
     @staticmethod
     def _map_metrics(raw: dict[str, str]) -> dict[str, Any]:

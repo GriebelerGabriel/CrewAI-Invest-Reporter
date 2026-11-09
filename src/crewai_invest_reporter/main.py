@@ -2,10 +2,10 @@
 """Command line interface.
 
 Usage:
-    python -m crewai_invest_reporter.main asset PETR4            # stock, FII, ETF, BDR or CNPJ
-    python -m crewai_invest_reporter.main dossier MXRF11 [--json] # what the agents read, no LLM
-    python -m crewai_invest_reporter.main holdings [--json]      # your stocks and funds, no LLM
-    python -m crewai_invest_reporter.main web [--port 8000]      # the wallet page
+    python -m crewai_invest_reporter.main daily [--no-email]     # today's digests + the emails
+    python -m crewai_invest_reporter.main web [--port 8000]      # the public sign-up page
+    python -m crewai_invest_reporter.main report [PETR4 ...]     # full reports, rating saved
+    python -m crewai_invest_reporter.main dossier PETR4 [--json] # what the agents read, no LLM
 """
 
 from __future__ import annotations
@@ -22,61 +22,49 @@ from waitress import serve
 
 from crewai_invest_reporter.bootstrap import Container
 from crewai_invest_reporter.domain.errors import InvestReporterError
-from crewai_invest_reporter.domain.models import Portfolio, ResearchDossier
+from crewai_invest_reporter.domain.models import ResearchDossier, today_in_brazil
 from crewai_invest_reporter.settings import Settings
 from crewai_invest_reporter.web import create_app
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="crewai_invest_reporter",
-        description="Investment reports for the stocks and funds in your wallet.",
+        description="AI-agent investment reports for a fixed list of B3 stocks.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    asset = sub.add_parser(
-        "asset", help="Generate a report for one asset: B3 ticker (stock/FII/ETF/BDR) or fund CNPJ"
+    daily = sub.add_parser(
+        "daily", help="Build today's digest of every watchlist stock, then email subscribers"
     )
-    asset.add_argument("identifier")
+    daily.add_argument("--no-email", action="store_true", help="Build the digests only")
+
+    web = sub.add_parser("web", help="Serve the sign-up page")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8000)
+
+    report = sub.add_parser(
+        "report",
+        help="Full 4-agent report per stock (given tickers, or the whole watchlist); "
+        "the verdict is saved to the database",
+    )
+    report.add_argument("tickers", nargs="*", metavar="TICKER")
 
     dossier = sub.add_parser(
         "dossier", help="Collect and show everything the agents would read (no LLM calls)"
     )
-    dossier.add_argument("identifier")
+    dossier.add_argument("ticker")
     dossier.add_argument("--json", action="store_true", help="Print the full dossier as JSON")
-
-    holdings = sub.add_parser(
-        "holdings", help="List your stocks and funds, from WALLET_SOURCE (no LLM calls)"
-    )
-    holdings.add_argument("--json", action="store_true", help="Print the holdings as JSON")
-
-    web = sub.add_parser("web", help="Serve the wallet page, to type in your stocks and funds")
-    web.add_argument("--host", default="127.0.0.1")
-    web.add_argument("--port", type=int, default=8000)
     return parser
 
 
-def _format_holdings(portfolio: Portfolio) -> str:
-    lines = [f"{'Ativo':<32} {'Classe':<18} {'Instituição':<16} {'Valor (R$)':>14} {'%':>7}"]
-    total = portfolio.total_value
-    for holding in sorted(portfolio.holdings, key=lambda h: h.market_value, reverse=True):
-        weight = holding.market_value / total * 100 if total else 0.0
-        lines.append(
-            f"{(holding.ticker or holding.name)[:32]:<32} {holding.asset_class.value:<18} "
-            f"{holding.institution[:16]:<16} {holding.market_value:>14,.2f} {weight:>6.2f}%"
-        )
-    lines.append(f"{'TOTAL':<68} {total:>14,.2f}")
-    lines.extend(f"! {error}" for error in portfolio.errors)
-    return "\n".join(lines)
-
-
 def _format_dossier(dossier: ResearchDossier) -> str:
-    asset = dossier.asset
+    stock = dossier.stock
     lines = [
-        f"{asset.display_name} | {asset.asset_class.value} | CNPJ {asset.cnpj or '-'}"
-        + (f" | US ticker {asset.foreign_ticker}" if asset.foreign_ticker else ""),
+        f"{stock.display_name} | CNPJ {stock.cnpj or '-'}",
         "",
         f"Official documents read ({len(dossier.documents)}):",
     ]
@@ -101,6 +89,42 @@ def _format_dossier(dossier: ResearchDossier) -> str:
     return "\n".join(lines)
 
 
+def _report(container: Container, tickers: list[str]) -> int:
+    """One report per ticker; a failure is printed and the next ticker still runs."""
+    failed = []
+    for ticker in tickers:
+        try:
+            path = container.report_service.generate(ticker)
+        except InvestReporterError as exc:
+            print(f"{ticker}: error: {exc}", file=sys.stderr)
+            failed.append(ticker)
+        except Exception:  # an LLM or network failure must not stop the other stocks
+            logger.exception("%s: report failed", ticker)
+            failed.append(ticker)
+        else:
+            print(f"{ticker}: report written to {path}")
+    if failed and len(tickers) > 1:
+        print(f"Failed: {', '.join(failed)}", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def _daily(container: Container, send: bool) -> int:
+    day = today_in_brazil()
+    tickers = container.tickers()
+    container.settings.llm.validate()
+    subscriptions = container.subscriptions if send else None  # checks the SMTP settings now
+    failed = container.daily_digests.run(day, tickers)
+    print(f"Digests for {day}: {len(tickers) - len(failed)} of {len(tickers)} stocks")
+    if failed:
+        print(f"Failed: {', '.join(failed)}", file=sys.stderr)
+    if subscriptions is None:
+        return 1 if failed else 0
+    sent, failed_emails = subscriptions.send_daily(day)
+    purged = subscriptions.purge_unconfirmed()
+    print(f"Emails sent: {sent}, failed: {len(failed_emails)}, unconfirmed deleted: {purged}")
+    return 1 if failed or failed_emails else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -108,30 +132,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         container = Container(Settings.from_env())
-        if args.command == "asset":
+        if args.command == "daily":
+            return _daily(container, send=not args.no_email)
+        if args.command == "web":
+            app = create_app(
+                container.subscriptions, container.choices, container.settings.contact_email
+            )
+            serve(app, host=args.host, port=args.port)
+        if args.command == "report":
+            tickers = args.tickers or container.tickers()
             # Fail now rather than after minutes of data collection.
             container.settings.llm.validate()
-            path = container.asset_service.generate(args.identifier)
-            print(f"Report written to {path}")
-        elif args.command == "dossier":
-            dossier = container.asset_service.collect(args.identifier)
+            return _report(container, tickers)
+        if args.command == "dossier":
+            dossier = container.report_service.collect(args.ticker)
             if args.json:
                 print(json.dumps(dossier.to_dict(), ensure_ascii=False, indent=2))
             else:
                 print(_format_dossier(dossier))
-        elif args.command == "holdings":
-            portfolio = container.portfolio_provider().fetch_portfolio()
-            if args.json:
-                print(json.dumps(portfolio.to_dict(), ensure_ascii=False, indent=2))
-            elif not portfolio.holdings:
-                print("No holdings yet: add them on the wallet page (`web` command).")
-            else:
-                print(_format_holdings(portfolio))
-        elif args.command == "web":
-            app = create_app(
-                container.wallet, container.resolver.resolve, container.asset_suggestions
-            )
-            serve(app, host=args.host, port=args.port)
     except InvestReporterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -6,31 +6,10 @@ layer can depend on them without pulling infrastructure concerns along.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
-from enum import Enum
 from typing import Any
-
-
-class AssetClass(str, Enum):
-    """The stocks and funds this app researches, independent of any provider's taxonomy."""
-
-    STOCK = "STOCK"
-    REAL_ESTATE_FUND = "REAL_ESTATE_FUND"
-    ETF = "ETF"
-    BDR = "BDR"
-    MUTUAL_FUND = "MUTUAL_FUND"
-
-    @property
-    def is_listed(self) -> bool:
-        """Whether assets of this class trade on B3 under a ticker we can research."""
-        return self in _LISTED_CLASSES
-
-
-_LISTED_CLASSES = frozenset(
-    {AssetClass.STOCK, AssetClass.REAL_ESTATE_FUND, AssetClass.ETF, AssetClass.BDR}
-)
+from zoneinfo import ZoneInfo
 
 
 def utc_now() -> datetime:
@@ -38,24 +17,21 @@ def utc_now() -> datetime:
 
 
 @dataclass(frozen=True)
-class AssetRef:
-    """Identifies an asset to research: a B3 ticker or, for unlisted funds, a CNPJ."""
+class Stock:
+    """A company listed on B3: its ticker, plus the legal name and CNPJ from CVM's registry."""
 
-    identifier: str
-    asset_class: AssetClass
+    ticker: str
     name: str | None = None
+    # Without a CNPJ the company's CVM filings cannot be looked up.
     cnpj: str | None = None
-    # For BDRs: the ticker of the underlying company on its home exchange (e.g. AAPL).
-    foreign_ticker: str | None = None
 
     @property
     def display_name(self) -> str:
-        return f"{self.identifier} ({self.name})" if self.name else self.identifier
+        return f"{self.ticker} ({self.name})" if self.name else self.ticker
 
     @property
     def report_name(self) -> str:
-        prefix = "FUNDO_" if self.identifier.isdigit() else ""
-        return f"{prefix}{self.identifier}_investment_report"
+        return f"{self.ticker}_investment_report"
 
 
 @dataclass(frozen=True)
@@ -68,7 +44,7 @@ class NewsItem:
 
 @dataclass(frozen=True)
 class Filing:
-    """An official document filed with a regulator (CVM, SEC) or B3's FundosNET."""
+    """An official document a company filed with CVM."""
 
     title: str
     category: str
@@ -114,7 +90,7 @@ class DocumentExcerpt:
 
 @dataclass(frozen=True)
 class Fundamentals:
-    """Fundamental indicators for a single listed asset."""
+    """Fundamental indicators for a single stock."""
 
     ticker: str
     source_url: str
@@ -130,13 +106,13 @@ class Fundamentals:
 
 @dataclass(frozen=True)
 class ResearchDossier:
-    """Everything collected about one asset before any LLM is involved.
+    """Everything collected about one stock before any LLM is involved.
 
     Collection is deterministic (fixed sources, fixed selection rules and text budgets), so
     the agents only analyze this bundle and two runs on the same day see the same inputs.
     """
 
-    asset: AssetRef
+    stock: Stock
     news: tuple[NewsItem, ...] = ()
     fundamentals: Fundamentals | None = None
     documents: tuple[DocumentExcerpt, ...] = ()
@@ -146,7 +122,7 @@ class ResearchDossier:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "asset": {key: value for key, value in asdict(self.asset).items() if value},
+            "stock": {key: value for key, value in asdict(self.stock).items() if value},
             "collected_at": self.collected_at.isoformat(),
             "news": [asdict(item) for item in self.news],
             "fundamentals": self.fundamentals.to_dict() if self.fundamentals else None,
@@ -156,63 +132,75 @@ class ResearchDossier:
         }
 
 
-@dataclass(frozen=True)
-class Holding:
-    """A single position held by the investor at a financial institution."""
+BRAZIL = ZoneInfo("America/Sao_Paulo")
 
-    name: str
-    asset_class: AssetClass
-    institution: str
-    market_value: float
-    ticker: str | None = None
-    cnpj: str | None = None
-    quantity: float | None = None
-    unit_price: float | None = None
-    invested_amount: float | None = None
-    profit: float | None = None
-    currency: str = "BRL"
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["asset_class"] = self.asset_class.value
-        return {key: value for key, value in data.items() if value is not None}
+def today_in_brazil() -> date:
+    """The B3 trading calendar runs on Brasília time, whatever the server's timezone."""
+    return datetime.now(BRAZIL).date()
 
 
 @dataclass(frozen=True)
-class Portfolio:
-    """A consolidated snapshot of holdings across one or more institutions."""
-
-    holdings: tuple[Holding, ...]
-    retrieved_at: datetime = field(default_factory=utc_now)
-    errors: tuple[str, ...] = ()
-
-    @property
-    def total_value(self) -> float:
-        return sum(h.market_value for h in self.holdings)
-
-    def research_targets(self) -> list[AssetRef]:
-        """One entry per asset (tickers held at two institutions merged), largest first."""
-        values: dict[str, float] = defaultdict(float)
-        refs: dict[str, AssetRef] = {}
-        for holding in self.holdings:
-            ref = _research_ref(holding)
-            if ref is not None:
-                values[ref.identifier] += holding.market_value
-                refs.setdefault(ref.identifier, ref)
-        return [refs[key] for key in sorted(values, key=values.__getitem__, reverse=True)]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "retrieved_at": self.retrieved_at.isoformat(),
-            "total_value": round(self.total_value, 2),
-            "holdings": [h.to_dict() for h in self.holdings],
-            "errors": list(self.errors),
-        }
+class Source:
+    title: str
+    url: str
+    kind: str = "news"  # "news" or "filing"
 
 
-def _research_ref(holding: Holding) -> AssetRef | None:
-    if holding.ticker and holding.asset_class.is_listed:
-        return AssetRef(holding.ticker, holding.asset_class, holding.name, holding.cnpj)
-    if holding.cnpj:
-        return AssetRef(holding.cnpj, holding.asset_class, holding.name, holding.cnpj)
-    return None
+@dataclass(frozen=True)
+class Digest:
+    """One stock's part of a day's email: generated once per day, sent to every subscriber."""
+
+    day: date
+    ticker: str
+    name: str | None = None
+    price: float | None = None
+    # Versus the previous digest's price, as a fraction (-0.012 = -1.2%).
+    price_change: float | None = None
+    # None when there was nothing new since the previous digest.
+    summary: str | None = None
+    sources: tuple[Source, ...] = ()
+
+
+@dataclass(frozen=True)
+class Subscriber:
+    id: int
+    email: str
+    tickers: tuple[str, ...]
+    unsubscribe_token: str
+    confirmed: bool
+    confirmation_sent_at: datetime | None = None
+
+
+RATING_CATEGORIES = ("Excellent to invest", "Good to invest", "Neutral / Watch", "Bad to invest")
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """The structured conclusion of a full report, as the rating agent stated it."""
+
+    rating: str  # one of RATING_CATEGORIES
+    probability_good: int  # % chance of being a good investment
+    probability_loss: int  # % chance of losing money
+    confidence: str  # alta / média / baixa
+
+
+@dataclass(frozen=True)
+class Analysis:
+    """What the report crew produces: the markdown report, and its verdict if one was parsed."""
+
+    report: str
+    verdict: Verdict | None = None
+
+
+@dataclass(frozen=True)
+class Rating:
+    """A verdict kept with the market data of its day, to compare later with what happened."""
+
+    day: date
+    ticker: str
+    verdict: Verdict
+    price: float | None
+    metrics: dict[str, float | None]
+    model: str
+    report: str

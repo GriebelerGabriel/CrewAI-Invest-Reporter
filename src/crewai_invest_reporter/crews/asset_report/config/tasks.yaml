@@ -1,10 +1,10 @@
 filings_analysis_task:
   description: >
-    Analyze the official documents of {asset_id} ({asset_name}), a {asset_class}, as of {today}.
-    Asset-specific guidance: {analysis_guidelines}
+    Analyze the official documents of {ticker} ({company}), a company listed on B3, as of {today}.
+    Key reports: earnings releases (category 'Dados Econômico-Financeiros'), fatos relevantes,
+    comunicados ao mercado and dividend notices.
 
-    The documents below were collected automatically from official sources and selected by
-    fixed rules. Each has metadata (title, category, delivered_on, url, source) and an
+    The documents below were collected automatically from CVM and selected by fixed rules. Each has metadata (title, category, delivered_on, url, source) and an
     excerpt in "text" ("truncated": true means only the beginning is included). Documents
     with "error" could not be read. "other_recent_filings" lists further filings by title only.
 
@@ -23,7 +23,7 @@ filings_analysis_task:
 
 news_synthesis_task:
   description: >
-    Synthesize the recent news about {asset_id} ({asset_name}) together with the findings
+    Synthesize the recent news about {ticker} ({company}) together with the findings
     from the official documents. News items (collected automatically from Google News,
     last 30 days; headlines only):
 
@@ -40,26 +40,24 @@ news_synthesis_task:
 
 fundamentals_task:
   description: >
-    Interpret the fundamentals and market data of {asset_id} ({asset_class}).
-    Asset-specific guidance: {analysis_guidelines}
+    Interpret the fundamentals and market data of {ticker} ({company}): valuation (P/L, P/VP),
+    dividend yield and dividends paid, and the 12-month price change.
     Data (collected automatically from Investidor10; ratios such as dividendYield and
     priceChange12m are fractions, e.g. 0.12 = 12%; null means unavailable):
 
     {fundamentals_data}
 
     IMPORTANT: Use only these numbers. Never invent or estimate a value; write
-    "Não disponível" for missing metrics. If the data is null for an unlisted fund,
-    state that market multiples are not applicable.
+    "Não disponível" for missing metrics.
   expected_output: >
-    A structured summary of the indicators that apply to this asset type, plus a short
-    interpretation.
+    A structured summary of the indicators, plus a short interpretation.
   agent: fundamentals_analyst
 
 investment_rating_task:
   description: >
     Combine the official-document analysis, the news synthesis and the fundamentals for
-    {asset_id} ({asset_name}), a {asset_class}, as of {today}.
-    Asset-specific guidance: {analysis_guidelines}
+    {ticker} ({company}) as of {today}. Assess revenue/EBITDA/net income trends, margins,
+    net debt/EBITDA, guidance, payout and dividends, P/L, P/VP and DY.
     Known data gaps: {data_gaps}
     Produce a final investment status category:
     - Excellent to invest
@@ -81,4 +79,15 @@ investment_rating_task:
     Resumo de Notícias, Fundamentos & Dados de Mercado, Classificação (com categoria),
     Risco do Investimento (estimativa), Justificativa, Riscos, O Que Mudaria Minha Opinião,
     Limitações dos Dados e Fontes.
+  agent: investment_rater
+
+verdict_task:
+  description: >
+    Read the final investment report on {ticker} and copy its conclusion into structured
+    fields, exactly as the report states it: the rating category, the "probabilidade de ser
+    um bom investimento" and "probabilidade de perder dinheiro" percentages (integers 0-100),
+    and the confidence the report expresses ("alta", "média" or "baixa"; "média" if the
+    report does not say). Do not re-evaluate the stock.
+  expected_output: >
+    The rating, the two probabilities and the confidence.
   agent: investment_rater

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Resumo diário de ações{% endblock %}</title>
+  <style>
+    :root { --fg: #1c1f24; --muted: #5d6470; --line: #d9dde3; --accent: #0b6e4f; --bg: #fafbfc; --card: #fff; --err: #b42318; }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg: #e8eaed; --muted: #a0a7b2; --line: #343a43; --accent: #3fbf8f; --bg: #15181c; --card: #1d2126; --err: #f97066; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 34rem; margin: 0 auto; padding: 2rem 1rem 3rem; }
+    h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
+    p { margin: 0 0 1rem; }
+    .muted { color: var(--muted); font-size: .9rem; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.25rem; }
+    fieldset { border: 0; padding: 0; margin: 0 0 1rem; display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: .5rem; }
+    legend { font-weight: 600; margin-bottom: .5rem; }
+    label.stock { display: flex; gap: .5rem; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: .5rem .6rem; cursor: pointer; }
+    label.stock small { display: block; color: var(--muted); font-size: .75rem; line-height: 1.2; }
+    input[type=email] { width: 100%; padding: .6rem .7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit; }
+    button { margin-top: 1rem; width: 100%; padding: .7rem; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    .error { color: var(--err); font-weight: 600; }
+    .hp { position: absolute; left: -10000px; }
+    a { color: var(--accent); }
+    footer { margin-top: 1.5rem; }
+  </style>
+</head>
+<body>
+<main>
+  {% block content %}{% endblock %}
+  <footer class="muted">
+    Resumo automático gerado por IA a partir de notícias e documentos públicos da CVM.
+    Não é recomendação de investimento. <a href="/privacidade">Privacidade</a>
+  </footer>
+</main>
+</body>
+</html>

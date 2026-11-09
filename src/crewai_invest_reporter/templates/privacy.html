@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Privacidade{% endblock %}
+{% block content %}
+<h1>Privacidade</h1>
+<p><strong>O que guardamos:</strong> seu e-mail, as ações que você escolheu e as datas da
+inscrição, da confirmação e de cada envio.</p>
+<p><strong>Para quê:</strong> só para enviar o resumo diário que você pediu. Não vendemos nem
+compartilhamos seus dados; eles passam apenas pelo serviço de envio de e-mails.</p>
+<p><strong>Por quanto tempo:</strong> enquanto você estiver inscrito. Inscrições não
+confirmadas são apagadas em 7 dias. Ao cancelar (link no fim de cada e-mail), seus dados são
+apagados na hora.</p>
+{% if contact_email %}<p><strong>Contato:</strong> {{ contact_email }}</p>{% endif %}
+<p><a href="/">Página inicial</a></p>
+{% endblock %}

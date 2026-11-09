@@ -64,10 +64,10 @@ def test_settings_read_bifrost_env(monkeypatch):
     )
 
 
-def test_asset_command_fails_before_collecting_when_key_is_missing(monkeypatch, capsys):
+def test_report_command_fails_before_collecting_when_key_is_missing(monkeypatch, capsys):
     monkeypatch.setenv("BIFROST_BASE_URL", "http://gw:8080/v1")
     monkeypatch.setenv("BIFROST_API_KEY", "")
-    assert main.main(["asset", "PETR4"]) == 1
+    assert main.main(["report", "PETR4"]) == 1
     assert "BIFROST_API_KEY is missing" in capsys.readouterr().err
 
 

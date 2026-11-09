@@ -1,7 +1,8 @@
 """Download a remote document and extract its text (PDF, HTML, XML or plain text).
 
-URLs come from LLM agents, so every hop (including redirects) is checked to only reach public
-http(s) hosts, and downloads are size-capped.
+URLs come from CVM's filing index, which lists them as published by each company; as a
+safeguard every hop (including redirects) is checked to only reach public http(s) hosts, and
+downloads are size-capped.
 """
 
 from __future__ import annotations
@@ -9,7 +10,6 @@ from __future__ import annotations
 import io
 import ipaddress
 import socket
-from collections import OrderedDict
 from collections.abc import Callable
 from urllib.parse import urljoin, urlparse
 
@@ -20,7 +20,6 @@ from pypdf.errors import PdfReadError
 
 from crewai_invest_reporter.domain.errors import ProviderError
 from crewai_invest_reporter.domain.models import Document
-from crewai_invest_reporter.domain.ports import DocumentReader
 from crewai_invest_reporter.providers.http import BROWSER_HEADERS, build_session
 
 MAX_BYTES = 25 * 1024 * 1024
@@ -45,14 +44,11 @@ class HttpDocumentReader:
         timeout: float = 60.0,
         max_bytes: int = MAX_BYTES,
         resolve_host: Resolver = _resolve_host,
-        domain_headers: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self._session = session or build_session(BROWSER_HEADERS)
         self._timeout = timeout
         self._max_bytes = max_bytes
         self._resolve_host = resolve_host
-        # e.g. {"sec.gov": {"User-Agent": ...}}: some sources require their own headers.
-        self._domain_headers = domain_headers or {}
 
     def read(self, url: str) -> Document:
         content, content_type = self._download(url)
@@ -75,7 +71,6 @@ class HttpDocumentReader:
             try:
                 response = self._session.get(
                     current,
-                    headers=self._headers_for(current),
                     timeout=self._timeout,
                     stream=True,
                     allow_redirects=False,
@@ -91,13 +86,6 @@ class HttpDocumentReader:
                 content_type = response.headers.get("Content-Type", "").lower()
                 return self._read_capped(response), content_type
         raise ProviderError(f"Too many redirects for {url}")
-
-    def _headers_for(self, url: str) -> dict[str, str]:
-        host = urlparse(url).hostname or ""
-        for domain, headers in self._domain_headers.items():
-            if host == domain or host.endswith(f".{domain}"):
-                return headers
-        return {}
 
     def _read_capped(self, response: requests.Response) -> bytes:
         buffer = io.BytesIO()
@@ -146,22 +134,3 @@ def _decode(content: bytes) -> str:
         return content.decode("utf-8")
     except UnicodeDecodeError:
         return content.decode("latin-1")
-
-
-class CachedDocumentReader:
-    """Keep recently read documents in memory so chunked reads don't re-download them."""
-
-    def __init__(self, inner: DocumentReader, max_entries: int = 16) -> None:
-        self._inner = inner
-        self._max_entries = max_entries
-        self._cache: OrderedDict[str, Document] = OrderedDict()
-
-    def read(self, url: str) -> Document:
-        if url in self._cache:
-            self._cache.move_to_end(url)
-            return self._cache[url]
-        document = self._inner.read(url)
-        self._cache[url] = document
-        if len(self._cache) > self._max_entries:
-            self._cache.popitem(last=False)
-        return document

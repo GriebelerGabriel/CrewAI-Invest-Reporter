@@ -8,39 +8,6 @@ from pathlib import Path
 
 from crewai_invest_reporter.domain.errors import ConfigurationError
 
-
-def _split_csv(value: str | None) -> tuple[str, ...]:
-    return tuple(part.strip() for part in (value or "").split(",") if part.strip())
-
-
-@dataclass(frozen=True)
-class PluggySettings:
-    """Credentials for Pluggy, the Open Finance aggregator used to read Nubank/NuInvest data."""
-
-    client_id: str = ""
-    client_secret: str = ""
-    item_ids: tuple[str, ...] = ()
-    base_url: str = "https://api.pluggy.ai"
-
-    def require(self) -> PluggySettings:
-        missing = [
-            name
-            for name, value in (
-                ("PLUGGY_CLIENT_ID", self.client_id),
-                ("PLUGGY_CLIENT_SECRET", self.client_secret),
-                ("PLUGGY_ITEM_IDS", self.item_ids),
-            )
-            if not value
-        ]
-        if missing:
-            raise ConfigurationError(
-                "Open Finance is not configured. Missing env vars: "
-                f"{', '.join(missing)}. See README section 'Open Finance (Nubank / NuInvest)', "
-                "or set WALLET_SOURCE=manual to use the wallet page."
-            )
-        return self
-
-
 # CrewAI's own default model, in the provider/model form Bifrost routes on.
 DEFAULT_BIFROST_MODEL = "openai/gpt-4.1-mini"
 
@@ -84,49 +51,75 @@ class LlmSettings:
             )
 
 
+SMTP_SECURITY = ("starttls", "ssl", "none")
+
+
+@dataclass(frozen=True)
+class MailSettings:
+    """SMTP server the emails go out through (a transactional email service in production)."""
+
+    host: str = ""
+    port: int = 587
+    username: str = ""
+    password: str = ""
+    # starttls (port 587), ssl (port 465) or none (a local test server only).
+    security: str = "starttls"
+    # From address, e.g. "Resumo de Ações <resumo@yourdomain.com>".
+    sender: str = ""
+
+    def require(self) -> MailSettings:
+        required = (("SMTP_HOST", self.host), ("MAIL_FROM", self.sender))
+        missing = [name for name, value in required if not value]
+        if missing:
+            raise ConfigurationError(
+                f"Email is not configured. Missing env vars: {', '.join(missing)}. "
+                "See README section 'Daily email'."
+            )
+        if self.security not in SMTP_SECURITY:
+            raise ConfigurationError(f"SMTP_SECURITY must be one of {', '.join(SMTP_SECURITY)}")
+        return self
+
+
 def _default_cache_dir() -> Path:
     base = os.getenv("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "crewai_invest_reporter"
 
 
-# Where holdings come from: the wallet page's file, or Open Finance through Pluggy.
-WALLET_SOURCES = ("manual", "pluggy")
-
-
 @dataclass(frozen=True)
 class Settings:
+    watchlist_file: Path = Path("watchlist.txt")
     reports_dir: Path = Path("reports")
     cache_dir: Path = field(default_factory=_default_cache_dir)
     http_timeout_seconds: float = 15.0
-    # SEC asks automated clients to identify themselves, ideally "Name contact@email".
-    sec_user_agent: str = "crewai-invest-reporter/0.1"
-    wallet_source: str = "manual"
-    wallet_file: Path = Path("wallet.json")
+    database_file: Path = Path("reporter.db")
+    # Address the sign-up page is reached at; links in the emails start with it.
+    public_url: str = "http://127.0.0.1:8000"
+    # Shown on the privacy page: where people can ask about their data.
+    contact_email: str = ""
     llm: LlmSettings = field(default_factory=LlmSettings)
-    pluggy: PluggySettings = field(default_factory=PluggySettings)
-
-    def __post_init__(self) -> None:
-        if self.wallet_source not in WALLET_SOURCES:
-            raise ConfigurationError(f"WALLET_SOURCE must be one of {', '.join(WALLET_SOURCES)}")
+    mail: MailSettings = field(default_factory=MailSettings)
 
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
-            reports_dir=Path(os.getenv("REPORTS_DIR", "reports")),
-            wallet_source=os.getenv("WALLET_SOURCE", "").strip().lower() or "manual",
-            wallet_file=Path(os.getenv("WALLET_FILE") or "wallet.json"),
-            cache_dir=Path(os.getenv("CACHE_DIR") or _default_cache_dir()),
-            http_timeout_seconds=float(os.getenv("HTTP_TIMEOUT_SECONDS", "15")),
-            sec_user_agent=os.getenv("SEC_USER_AGENT", "").strip() or "crewai-invest-reporter/0.1",
+            watchlist_file=Path(os.getenv("WATCHLIST_FILE") or "watchlist.txt"),
+            reports_dir=Path(os.getenv("REPORTS_DIR") or "reports"),
+            cache_dir=Path(os.getenv("CACHE_DIR") or _default_cache_dir()).expanduser(),
+            http_timeout_seconds=float(os.getenv("HTTP_TIMEOUT_SECONDS") or "15"),
+            database_file=Path(os.getenv("DATABASE_FILE") or "reporter.db"),
+            public_url=(os.getenv("PUBLIC_URL") or "http://127.0.0.1:8000").strip().rstrip("/"),
+            contact_email=os.getenv("CONTACT_EMAIL", "").strip(),
             llm=LlmSettings(
                 model=os.getenv("MODEL", "").strip(),
                 bifrost_base_url=os.getenv("BIFROST_BASE_URL", "").strip().rstrip("/"),
                 bifrost_api_key=os.getenv("BIFROST_API_KEY", "").strip(),
             ),
-            pluggy=PluggySettings(
-                client_id=os.getenv("PLUGGY_CLIENT_ID", "").strip(),
-                client_secret=os.getenv("PLUGGY_CLIENT_SECRET", "").strip(),
-                item_ids=_split_csv(os.getenv("PLUGGY_ITEM_IDS")),
-                base_url=os.getenv("PLUGGY_BASE_URL", "https://api.pluggy.ai").rstrip("/"),
+            mail=MailSettings(
+                host=os.getenv("SMTP_HOST", "").strip(),
+                port=int(os.getenv("SMTP_PORT") or "587"),
+                username=os.getenv("SMTP_USERNAME", "").strip(),
+                password=os.getenv("SMTP_PASSWORD", ""),
+                security=(os.getenv("SMTP_SECURITY") or "starttls").strip().lower(),
+                sender=os.getenv("MAIL_FROM", "").strip(),
             ),
         )

@@ -1,20 +1,18 @@
 # CrewAI Invest Reporter
 
-AI-agent investment reports (in **pt-BR**) for the stocks and funds (stocks, FIIs, ETFs,
-BDRs and investment funds) in your wallet. You type your holdings in on a small
-**wallet page**, or read them from Nubank / NuInvest through **Open Finance**.
+AI agents (in **pt-BR**) on a fixed list of B3 stocks, two ways:
 
-- **Asset report**: the code first collects, with fixed rules and no LLM, the asset's latest
-  **official reports** (CVM filings for companies, B3 FundosNET documents such as
-  *relatórios gerenciais* for FIIs, SEC filings for BDRs), recent news (Google News RSS) and
-  fundamentals (Investidor10). The agents then analyze that bundle and write an investment
-  rating with risks, "what would change my view" and the list of sources.
-- **Holdings**: the stocks and funds you hold, from the wallet page (default) or Pluggy Open
-  Finance. Stocks, FIIs, ETFs and BDRs are valued at the day's quote.
-- **Inspection commands** with no LLM calls: your holdings and the exact research bundle
-  (the "dossier") the agents will read.
+- **Daily email (public):** every trading morning, before B3 opens, one agent writes a short
+  "what's new" per stock from the latest news and CVM filings. This runs **once** for the
+  whole watchlist; anyone can pick stocks on a sign-up page and receives that day's
+  briefings for them. News only, never buy/sell advice.
+- **Full reports (private):** four agents rate a stock (official reports, news,
+  fundamentals) and write a report to `reports/<TICKER>_investment_report.md`. The verdict
+  (rating and probabilities), with the day's price and fundamentals, is saved to SQLite, to
+  compare later with what the stock really did.
 
-Reports are written to `reports/` (configurable with `REPORTS_DIR`).
+All data is collected with fixed rules and no LLM: the company's **official reports** (CVM
+filings), recent news (Google News RSS) and fundamentals (Investidor10).
 
 ## Quick start
 
@@ -23,45 +21,119 @@ curl -LsSf https://astral.sh/uv/install.sh | sh   # or: pip install uv
 uv sync --extra dev
 cp .env.example .env                               # then fill in your keys
 
-uv run python -m crewai_invest_reporter.main web                # wallet page on http://127.0.0.1:8000
-uv run python -m crewai_invest_reporter.main holdings
-uv run python -m crewai_invest_reporter.main dossier MXRF11     # no LLM: what agents will read
-uv run python -m crewai_invest_reporter.main asset MXRF11
+uv run python -m crewai_invest_reporter.main dossier PETR4      # no LLM: what agents will read
+uv run python -m crewai_invest_reporter.main daily --no-email   # today's digests, no emails
+uv run python -m crewai_invest_reporter.main report PETR4       # full report + saved rating
 ```
 
 | Command | What it does | LLM? |
 |---|---|---|
-| `web [--host H] [--port N]` | Serves the wallet page, where you type in your stocks and funds | no |
-| `holdings [--json]` | Prints your stocks and funds, valued at the day's quote | no |
-| `dossier <TICKER or CNPJ> [--json]` | Collects and prints everything the agents will read | no |
-| `asset <TICKER or CNPJ>` | Report for one asset → `reports/<TICKER>_investment_report.md` (funds: `FUNDO_<CNPJ>_…`) | yes |
+| `daily [--no-email]` | Builds today's digest of every watchlist stock (once a day), then emails confirmed subscribers who haven't had it | yes, 1 call per stock with something new |
+| `web [--host H] [--port N]` | Serves the sign-up page | no |
+| `report [TICKER ...]` | Full report per stock (the tickers given, or the whole watchlist); verdict saved to the database | yes, 5 calls per stock |
+| `dossier TICKER [--json]` | Collects and prints everything the full report's agents will read | no |
 
-The same commands are available through `make web`, `make holdings`,
-`make dossier TICKER=MXRF11` and `make run TICKER=MXRF11`.
+Also available as `make daily`, `make web`, `make run [TICKER=PETR4]` and
+`make dossier TICKER=PETR4`.
 
-## Your wallet
+## The watchlist
 
-`web` serves a small page where you add each asset you hold:
+`watchlist.txt` holds the stocks to report on, one B3 ticker per line. Blank lines and
+anything after `#` are ignored:
 
-- **Stocks, FIIs, ETFs and BDRs**: the ticker (autocompleted from CVM's lists) and the
-  number of shares. `holdings` values them at the day's quote from Investidor10.
-- **Investment funds**: the fund's CNPJ and its value in R$, since funds have no quote.
-  Give the fund's name too: it is used to search news about it.
-- **Import from B3**: in B3's Área do Investidor, download your position as Excel
-  (`posicao-*.xlsx`) and upload it. Every tab with the columns "Código de Negociação" and
-  "Quantidade" is read (stocks, FIIs, ETFs, BDRs), a ticker held at two brokers is summed,
-  and the result **replaces** your ticker entries. Funds added by CNPJ are kept.
+```text
+PETR4
+VALE3   # mineração
+BRBI11
+```
 
-Adding an asset that is already there replaces its amount; each one can also be edited or
-removed. Everything is saved to `wallet.json` (`WALLET_FILE`), which is git-ignored because
-it holds your personal data.
+Every ticker must be a company in CVM's registry (units such as BRBI11 included); a typo
+fails that stock with a clear message and the others still run. Point `WATCHLIST_FILE` at
+another file to keep a different list.
 
-The page has no login: it listens only on `127.0.0.1`. Before making it reachable from
-another machine, put it behind a password (e.g. nginx basic auth). It refuses form posts
-coming from other websites.
+## Daily email
 
-To read holdings from Open Finance instead, set `WALLET_SOURCE=pluggy` and follow the next
-section.
+```text
+trading day, 09:00 Brasília (cron)          sign-up page (public)
+  daily: for each watchlist stock             pick stocks + email
+    news + CVM filings since the last digest    -> confirmation link by email
+    nothing new? no LLM call                    -> confirmed: today's email at once,
+    else 1 agent writes 2-5 bullet points          if the digests are built
+  -> digests saved in SQLite (reporter.db)
+  -> one email per confirmed subscriber, with only their stocks
+```
+
+- **Once per day:** the digests are built once for the whole watchlist and reused for every
+  subscriber, so the LLM cost does not grow with the number of people. Running `daily` twice
+  the same day builds nothing again and sends nobody a second email.
+- **What's new:** news and CVM filings from the days since the stock's previous digest whose
+  links were not reported yet. New filings are read (up to 3, 4k characters each). The price
+  move is today's Investidor10 price against the previous digest's.
+- **Content rules:** the agent reports facts with their source and never recommends buying,
+  selling or holding. In Brazil, publishing investment recommendations to the public is
+  reserved to CVM-accredited analysts (Resolução CVM 20), so the public email stays
+  news-only; the ratings of the full reports stay private.
+
+### Subscribers and privacy (LGPD)
+
+- A sign-up (new, or a change of stocks) only takes effect when the link emailed to the
+  address is opened within 2 days, so nobody can subscribe someone else. The link opens a
+  page with a button: mailbox scanners that open links can't confirm on the user's behalf.
+- Every email has an unsubscribe link and the `List-Unsubscribe` one-click headers that
+  Gmail and Yahoo expect. Unsubscribing **deletes** the subscriber; unconfirmed sign-ups are
+  deleted after 7 days. The privacy page (`/privacidade`) says this, with `CONTACT_EMAIL`.
+- Only the email, the chosen stocks and dates are stored.
+
+### Going live
+
+1. **Email service and domain.** Use a transactional email service with SMTP (Brevo, Amazon
+   SES, Resend, OCI Email Delivery...) and a domain you control, with the SPF and DKIM
+   records the service gives you: without them, mail to Gmail/Outlook lands in spam. A
+   DuckDNS name can't hold those records. Fill in the `SMTP_*`, `MAIL_FROM` and
+   `PUBLIC_URL` variables.
+2. **Page.** Run `web` on the VM (it listens on 127.0.0.1:8000) behind nginx with HTTPS. Pass
+   the `Host` header (the page refuses cross-site posts by comparing it) and rate-limit
+   sign-ups, e.g.:
+   ```nginx
+   limit_req_zone $binary_remote_addr zone=signup:10m rate=5r/m;   # in http { }
+   location = /inscrever {
+       limit_req zone=signup burst=5 nodelay;
+       proxy_pass http://127.0.0.1:8000;
+       proxy_set_header Host $host;
+   }
+   location / {
+       proxy_pass http://127.0.0.1:8000;
+       proxy_set_header Host $host;
+   }
+   ```
+3. **Schedule.** Brazil has no daylight saving time, so 09:00 in Brasília is 12:00 UTC:
+   ```cron
+   0 12 * * 1-5  cd /path/to/CrewAI-Invest-Reporter && .venv/bin/python -m crewai_invest_reporter.main daily >> daily.log 2>&1
+   ```
+   B3 holidays are not skipped yet: on those days the email covers the news as usual.
+
+## Ratings memory
+
+Each `report` run saves a row in the `ratings` table of `reporter.db`: day, ticker, rating
+category, `probability_good` / `probability_loss` (the "Risco do Investimento" percentages),
+the confidence, the price and every fundamental of that day, the model used and the full
+report. Every run is kept, so the same stock can be rated daily, or by several models.
+
+A fifth task in the crew copies the report's conclusion into typed fields (validated with
+Pydantic), so nothing is parsed from markdown. If that step fails, the report is still
+written and the rating is skipped, with a warning.
+
+The `digests` table holds one price per stock per trading morning (run `daily` every
+trading day, `--no-email` is enough), which gives the "what happened next" side:
+
+```sql
+-- Each rating with the price 30 days later
+SELECT r.day, r.ticker, r.rating, r.probability_good, r.price AS price_then,
+       (SELECT d.price FROM digests d
+         WHERE d.ticker = r.ticker AND d.day >= date(r.day, '+30 days')
+         ORDER BY d.day LIMIT 1) AS price_30d_later
+FROM ratings r ORDER BY r.day;
+```
 
 ## LLM gateway (Bifrost)
 
@@ -87,67 +159,10 @@ it through an SSH tunnel (`ssh -L 8080:127.0.0.1:8080 bifrost`, then http://loca
 
 `MODEL` must be a model the virtual key allows, written `provider/model`. Without `MODEL`,
 `openai/gpt-4.1-mini` is used. The key is sent both as `Authorization: Bearer` and as
-Bifrost's `x-bf-vk` header. A call without a valid key gets `401` once the gateway enforces
-virtual keys on inference.
+Bifrost's `x-bf-vk` header.
 
 To skip the gateway, leave `BIFROST_BASE_URL` empty: CrewAI then calls the provider directly
 with `OPENAI_API_KEY` (or another provider's key) and `MODEL`.
-
-## Open Finance (Nubank / NuInvest), optional
-
-Instead of typing your holdings in, you can read them automatically from Nubank / NuInvest
-with `WALLET_SOURCE=pluggy`.
-
-Brazilian Open Finance APIs can only be called directly by institutions regulated by the
-Central Bank, so the project uses **[Pluggy](https://pluggy.ai)**, an Open Finance
-aggregator that supports Nubank and NuInvest. For personal use, the **MeuPluggy** connector
-lets you share your own accounts with your own app.
-
-### One-time setup
-
-1. **Connect your banks.** Sign up at [meu.pluggy.ai](https://meu.pluggy.ai), click
-   *Connect*, and authorize **Nubank** and **NuInvest** through the official Open Finance flow.
-2. **Create a developer app.** Sign up at [dashboard.pluggy.ai](https://dashboard.pluggy.ai)
-   (this starts a trial), enable the **MeuPluggy** connector, and create a *Development
-   Application*. Copy its `CLIENT_ID` and `CLIENT_SECRET`.
-3. **Link MeuPluggy to the app.** In the dashboard's *Demo* application, connect
-   **MeuPluggy** and complete its OAuth authorization **once per institution** (once for
-   Nubank, once for NuInvest). Each authorization creates an **item**. Copy each item's id.
-4. **Configure `.env`:**
-
-   ```bash
-   WALLET_SOURCE=pluggy
-   PLUGGY_CLIENT_ID=...
-   PLUGGY_CLIENT_SECRET=...
-   PLUGGY_ITEM_IDS=<nubank-item-id>,<nuinvest-item-id>
-   ```
-
-5. Check it with `holdings`. No LLM is called, so this costs nothing:
-
-   ```bash
-   uv run python -m crewai_invest_reporter.main holdings
-   ```
-
-MeuPluggy refreshes the underlying Open Finance connections daily. Open Finance consents
-expire (usually after 12 months), so renew them at meu.pluggy.ai when that happens.
-
-### What is imported
-
-| Pluggy data | Mapped to |
-|---|---|
-| `EQUITY` (subtypes `STOCK`, `BDR`, `REAL_ESTATE_FUND`) | `STOCK`, `BDR`, `REAL_ESTATE_FUND` (FIIs) |
-| `ETF` | `ETF` |
-| `MUTUAL_FUND` | `MUTUAL_FUND` |
-| `FIXED_INCOME`, `SECURITY` (PGBL / VGBL), `COE`, options | skipped |
-
-Fully withdrawn and zero-balance positions are skipped, and so are bank accounts and credit
-cards. If one institution fails, the others are still reported and the failure is listed
-under "errors".
-
-> **Pricing note:** MeuPluggy is free for individuals, and the Pluggy developer dashboard
-> starts with a trial. Check Pluggy's current plans before relying on it long term. The code
-> is written against an abstraction (`PortfolioProvider`), so another aggregator (Belvo,
-> etc.) can be plugged in by writing one new provider class.
 
 ## Deterministic research
 
@@ -157,132 +172,95 @@ text budgets mean that two runs on the same day give the agents the same inputs,
 agents have no tools to go looking elsewhere. Run `dossier <ticker>` to see exactly what
 they will receive.
 
-### Sources per asset type
+| Source (no API key) | What is collected |
+|---|---|
+| **CVM open data**, FCA dataset | the ticker's company: legal name and CNPJ |
+| **CVM open data**, IPE dataset (last 180 days) | 1 earnings release (15k chars), 2 fatos relevantes (5k each), 1 dividend notice (3k), 1 comunicado (3k); up to 10 other filings by title |
+| **Investidor10** | price, 12-month change, P/L, P/VP, dividend yield, dividends paid |
+| **Google News RSS** | up to 15 headlines from the last 30 days |
 
-| Asset | Official source (no API key) | Documents selected, newest first (character budget) |
-|---|---|---|
-| Stocks and units (PETR4, TAEE11…) | **CVM open data**, IPE dataset | 1 earnings release (15k), 2 fatos relevantes (5k each), 1 dividend notice (3k), 1 comunicado (3k) |
-| FIIs (MXRF11…) | **B3 FundosNET** | 1 relatório gerencial (15k), 2 fatos relevantes (5k each), 1 dividend notice (3k), 1 informe mensal (5k) |
-| Investment funds (by CNPJ) | B3 FundosNET, when the fund publishes there | 1 relatório (12k), 2 fatos relevantes (4k each), 1 informe (4k) |
-| BDRs (AAPL34, M1TA34…) | **SEC EDGAR**, filings of the US company | 1 earnings press release (15k), 2 other 8-Ks (3k each) |
-| ETFs (BOVA11…) | none; recorded as a data gap | – |
-
-In addition, every asset gets fundamentals from Investidor10 and up to 15 Google News
-headlines from the last 30 days.
-
-How assets are identified:
-- **Stocks**: CVM's FCA dataset maps the ticker to the company's CNPJ.
-- **FIIs**: CVM's FII monthly-report dataset maps the ticker to the fund's CNPJ (through
-  the ISIN code).
-- **BDRs**: Investidor10's page gives the US ticker ("Nasdaq sob o ticker AAPL"), and
-  SEC's ticker list gives the company's CIK.
-
-CVM and SEC lists are cached on disk for 24 hours (`CACHE_DIR`). If a source is down, the
-last cached copy is used. A source that fails doesn't stop the report: the failure is
-written into the dossier's `data_gaps`, and the agents are told to lower their confidence
-and mention it.
+CVM datasets are cached on disk for 24 hours (`CACHE_DIR`). If CVM is down, the last cached
+copy is used. A source that fails doesn't stop the report: the failure is written into the
+dossier's `data_gaps`, and the agents are told to lower their confidence and mention it.
 
 The document reader extracts text from PDF, HTML and XML. It only fetches public `http(s)`
 addresses, re-checks every redirect, and caps downloads at 25 MB.
 
 ## Architecture
 
-The code follows a ports-and-adapters layout. The domain layer has no external
-dependencies, and every external service sits behind a small protocol.
-
-```mermaid
-flowchart LR
-    CLI[main.py<br/>CLI] --> BOOT[bootstrap.py<br/>composition root]
-    BOOT --> SVC[services<br/>AssetReportService]
-    SVC --> COL[ResearchCollector<br/>deterministic, no LLM]
-    SVC --> CREWS[crews<br/>AssetReportCrew<br/>analysis only, no tools]
-    COL --> PORTS[[domain.ports<br/>News · Fundamentals · Filings<br/>DocumentReader · AssetResolver<br/>Portfolio]]
-    SVC --> PORTS
-    PORTS -.implemented by.-> PROV[providers<br/>CVM · FundosNET · SEC EDGAR<br/>GoogleNews · Investidor10<br/>wallet file · Pluggy]
-    SVC --> WR[ReportWriter]
-```
+The domain layer has no external dependencies, and every external service sits behind a
+small protocol (`domain/ports.py`), so tests swap in fakes.
 
 ```
 src/crewai_invest_reporter/
-├── main.py                 # CLI
-├── web.py                  # wallet page (Flask) + templates/wallet.html
+├── main.py                 # CLI: daily, web, report, dossier
+├── web.py                  # public sign-up page (Flask) + templates/
+├── watchlist.py            # reads watchlist.txt
 ├── bootstrap.py            # Container: wires concrete providers/crews (composition root)
 ├── settings.py             # typed settings from env vars
 ├── domain/
-│   ├── models.py           # AssetRef, Filing, ResearchDossier, Holding, Portfolio…
+│   ├── models.py           # Stock, Filing, ResearchDossier, Digest, Subscriber, Verdict…
 │   ├── ports.py            # one small protocol per external capability
 │   ├── tickers.py          # B3 ticker normalization/validation
 │   ├── cnpj.py             # CNPJ normalization with check digits
 │   └── errors.py
 ├── providers/              # adapters to the outside world
+│   ├── database.py         # SQLite: digests, subscribers, deliveries, ratings
+│   ├── smtp.py             # sends email through any SMTP server
+│   ├── cvm.py              # CVM open data: cached client, company registry, IPE filings
+│   ├── investidor10.py     # parser (pure) + provider (HTTP)
 │   ├── google_news.py
-│   ├── investidor10.py     # parser (pure) + provider (HTTP), with category fallback
-│   ├── wallet.py           # wallet page's JSON file + provider valuing it at the day's quote
-│   ├── b3_position.py      # reads the position .xlsx exported from B3's Área do Investidor
-│   ├── pluggy.py           # Open Finance: client (auth/pagination) + mapper + provider
-│   ├── cvm.py              # CVM open data: cached client, registries, IPE filings
-│   ├── fundosnet.py        # B3 FundosNET fund documents
-│   ├── sec_edgar.py        # SEC filings of the US companies behind BDRs
-│   ├── cache.py            # disk cache with stale fallback (CVM, SEC lists)
-│   ├── assets.py           # ticker/CNPJ resolver + routing of filings by asset class
-│   ├── documents.py        # safe PDF/HTML/XML reader (+ in-memory cache decorator)
+│   ├── documents.py        # safe PDF/HTML/XML reader
+│   ├── cache.py            # disk cache with stale fallback
 │   ├── parsing.py          # Brazilian number parsing
 │   └── http.py             # session with retries/backoff
 ├── crews/
-│   └── asset_report/       # 4 agents: official reports → news synthesis → fundamentals → rating
-│       └── guidelines.py   # what to analyze per asset class (FII ≠ stock ≠ ETF ≠ fund)
+│   ├── daily_news/         # 1 agent: the daily "what's new" briefing
+│   └── asset_report/       # 4 agents + verdict extraction: reports → news → fundamentals → rating
 └── services/
     ├── research.py         # ResearchCollector + document selection rules (deterministic)
-    ├── reporting.py        # orchestration: resolve → collect → analyze → write
+    ├── daily.py            # builds the day's digests once
+    ├── subscriptions.py    # sign-up, confirmation, unsubscribe, daily sending
+    ├── emails.py           # email texts (pt-BR, plain text)
+    ├── stocks.py           # ticker -> company (CVM registry)
+    ├── reporting.py        # full report: resolve → collect → analyze → write → save rating
     └── report_writer.py
 ```
 
-How the code applies SOLID:
-
-- **Single responsibility:** fetching (providers), parsing (`Investidor10Parser`,
-  `PluggyInvestmentMapper`), choosing what to read (`ResearchCollector`), LLM reasoning
-  (crews), orchestration (services) and persistence (`ReportWriter`) are separate classes.
-- **Open/closed:** a new data source is a new provider class, and a new document type is a
-  new `SelectionRule`. Crews and services stay unchanged.
-- **Liskov substitution and interface segregation:** the protocols are small (one method
-  each), so fakes in the tests and real adapters can be swapped freely.
-- **Dependency inversion:** services and the collector depend on `domain.ports`. Only
-  `bootstrap.py` knows the concrete classes.
-
-### Asset report flow
+### Full report flow
 
 ```mermaid
 flowchart TD
-    IN[ticker or CNPJ] --> RES[resolve: class, name, CNPJ / US ticker<br/>CVM registries, Investidor10, SEC]
-    RES --> COL[collect, no LLM:<br/>official documents by rules, news, fundamentals]
+    IN[ticker from watchlist.txt] --> RES[resolve: name and CNPJ<br/>CVM registry]
+    RES --> COL[collect, no LLM:<br/>CVM filings by rules, news, fundamentals]
     COL --> DOS[(dossier<br/>+ data gaps)]
     DOS --> T1[1 filings_analysis_task<br/>filings_analyst]
     T1 --> T2[2 news_synthesis_task<br/>news_synthesizer<br/>official documents prevail over news]
     DOS --> T3[3 fundamentals_task<br/>fundamentals_analyst]
     T2 --> T4[4 investment_rating_task<br/>investment_rater<br/>rating, risks, sources, in pt-BR]
     T3 --> T4
-    T4 --> OUT[reports/&lt;ASSET&gt;_investment_report.md]
+    T4 --> OUT[reports/&lt;TICKER&gt;_investment_report.md]
+    T4 --> T5[5 verdict_task<br/>rating + probabilities as typed fields]
+    T5 --> DB[(ratings table)]
 ```
-
-Asset-class guidance from `crews/asset_report/guidelines.py` is added to the prompts, so
-FIIs are judged on vacancy, default rate, distributions and P/VP rather than P/L; ETFs on
-index, fees and liquidity; BDRs on the US company's results; and funds on returns against
-their benchmark, fees and liquidity.
 
 ## Configuration
 
 | Variable | Required for | Default |
 |---|---|---|
-| `BIFROST_BASE_URL` | `asset` through the [LLM gateway](#llm-gateway-bifrost) | – |
+| `BIFROST_BASE_URL` | `report` through the [LLM gateway](#llm-gateway-bifrost) | – |
 | `BIFROST_API_KEY` | with `BIFROST_BASE_URL`; this project's virtual key | – |
-| `OPENAI_API_KEY` (or another CrewAI LLM provider's key) | `asset` without the gateway | – |
+| `OPENAI_API_KEY` (or another CrewAI LLM provider's key) | `report` without the gateway | – |
 | `MODEL` | optional; with the gateway, a `provider/model` name | `openai/gpt-4.1-mini` with the gateway, otherwise CrewAI's default |
-| `WALLET_SOURCE` | optional: `manual` (the wallet page) or `pluggy` (Open Finance) | `manual` |
-| `WALLET_FILE` | optional; where the wallet page saves your holdings | `wallet.json` |
-| `PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS` | `holdings` with `WALLET_SOURCE=pluggy` | – |
-| `SEC_USER_AGENT` | optional; your name and email, as SEC asks of automated clients | `crewai-invest-reporter/0.1` |
-| `CACHE_DIR` | optional; cache for CVM/SEC downloads | `~/.cache/crewai_invest_reporter` |
+| `SMTP_HOST`, `MAIL_FROM` | `daily` and `web` (see [Daily email](#daily-email)) | – |
+| `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | your email service's SMTP credentials | `587`, –, – |
+| `SMTP_SECURITY` | `starttls`, `ssl` or `none` (local test server only) | `starttls` |
+| `PUBLIC_URL` | address of the sign-up page, used in email links | `http://127.0.0.1:8000` |
+| `CONTACT_EMAIL` | shown on the privacy page | – |
+| `DATABASE_FILE` | optional; the SQLite file | `reporter.db` |
+| `WATCHLIST_FILE` | optional | `watchlist.txt` |
 | `REPORTS_DIR` | optional | `reports` |
+| `CACHE_DIR` | optional; cache for CVM downloads | `~/.cache/crewai_invest_reporter` |
 | `HTTP_TIMEOUT_SECONDS` | optional | `15` |
 
 Never commit your `.env` file.
@@ -301,15 +279,14 @@ crews and providers are replaced with fakes through the ports. CI
 ## Limitations
 
 - News items are headlines only; the in-depth reading is done on the official reports.
-- FundosNET is slow at times. Requests have a 60-second timeout and are retried.
-- ETFs have no issuer documents. Their reports rely on market data and news.
-- Only the beginning of each document is read, within its character budget. For long
-  relatórios gerenciais this covers the highlights, not every table.
+- Only the beginning of each document is read, within its character budget.
 - Scanned PDFs, which contain images rather than text, can't be read because there is no OCR.
 - Investidor10 is scraped, so the parser may break when the site changes. Missing metrics
   are reported as "Não disponível" and are never estimated.
-- Open Finance data depends on what each institution shares and on how often the connection
-  is refreshed.
 
-> These reports are produced by AI from public and Open Finance data. They are **not** a
-> formal investment recommendation.
+- B3 holidays are not skipped by `daily` yet.
+- Emails are sent one connection each, fine for hundreds of subscribers, not for tens of
+  thousands.
+
+> These reports are produced by AI from public data. They are **not** a formal investment
+> recommendation.

@@ -1,0 +1,10 @@
+# Stocks to report on: one B3 ticker per line. `make run` covers all of them.
+PETR4
+BBSE3
+BBAS3
+BBDC3
+SAPR4
+CMIG4
+JHSF3
+VALE3
+BRBI11

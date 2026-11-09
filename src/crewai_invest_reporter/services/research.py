@@ -1,9 +1,9 @@
 """Deterministic research collection: what the agents read is decided here, in plain code.
 
-For each asset the collector runs fixed queries against fixed sources, picks official
-documents with explicit per-asset-class rules, and cuts each one to a fixed character
-budget. No LLM chooses what to search or read, so runs are reproducible and auditable
-(``main dossier <ticker>`` prints exactly what the agents receive).
+For each stock the collector runs fixed queries against fixed sources, picks official
+documents with explicit rules, and cuts each one to a fixed character budget. No LLM chooses
+what to search or read, so runs are reproducible and auditable (``main dossier <ticker>``
+prints exactly what the agents receive).
 """
 
 from __future__ import annotations
@@ -16,13 +16,12 @@ from email.utils import parsedate_to_datetime
 
 from crewai_invest_reporter.domain.errors import InvestReporterError
 from crewai_invest_reporter.domain.models import (
-    AssetClass,
-    AssetRef,
     DocumentExcerpt,
     Filing,
     Fundamentals,
     NewsItem,
     ResearchDossier,
+    Stock,
 )
 from crewai_invest_reporter.domain.ports import (
     DocumentReader,
@@ -59,51 +58,36 @@ def _haystack(filing: Filing) -> str:
     return f"{filing.category} {filing.title}".lower()
 
 
-# Order matters: earlier rules have priority and each filing is used at most once.
-SELECTION_RULES: dict[AssetClass, tuple[SelectionRule, ...]] = {
-    AssetClass.STOCK: (
-        SelectionRule(
-            "Release de resultados",
-            ("dados econômico-financeiros",),
-            1,
-            15_000,
-            prefer=("press-release", "press release", "release de resultados", "desempenho"),
-        ),
-        SelectionRule("Fato relevante", ("fato relevante",), 2, 5_000),
-        SelectionRule("Proventos", ("relatório proventos", "aviso aos acionistas"), 1, 3_000),
-        SelectionRule("Comunicado ao mercado", ("comunicado ao mercado",), 1, 3_000),
+# Which CVM filings the agents read. Order matters: earlier rules have priority and each
+# filing is used at most once.
+SELECTION_RULES: tuple[SelectionRule, ...] = (
+    SelectionRule(
+        "Release de resultados",
+        ("dados econômico-financeiros",),
+        1,
+        15_000,
+        prefer=("press-release", "press release", "release de resultados", "desempenho"),
     ),
-    AssetClass.REAL_ESTATE_FUND: (
-        SelectionRule("Relatório gerencial", ("relatório gerencial",), 1, 15_000),
-        SelectionRule("Fato relevante", ("fato relevante",), 2, 5_000),
-        SelectionRule("Rendimentos", ("rendimentos",), 1, 3_000),
-        SelectionRule("Informe mensal", ("informe mensal",), 1, 5_000),
-    ),
-    AssetClass.MUTUAL_FUND: (
-        SelectionRule("Relatório", ("relatório",), 1, 12_000),
-        SelectionRule("Fato relevante", ("fato relevante",), 2, 4_000),
-        SelectionRule("Informe", ("informe",), 1, 4_000),
-    ),
-    AssetClass.BDR: (
-        SelectionRule("Earnings release", ("earnings release",), 1, 15_000),
-        SelectionRule("Current report", ("current report",), 2, 3_000),
-    ),
-}
+    SelectionRule("Fato relevante", ("fato relevante",), 2, 5_000),
+    SelectionRule("Proventos", ("relatório proventos", "aviso aos acionistas"), 1, 3_000),
+    SelectionRule("Comunicado ao mercado", ("comunicado ao mercado",), 1, 3_000),
+)
 
 NEWS_DAYS = 30
 NEWS_MAX_ITEMS = 15
 FILINGS_DAYS = 180
 OTHER_FILINGS_LISTED = 10
+# Daily digest: every new filing is read, each cut to a short budget.
+DAILY_MAX_DOCUMENTS = 3
+DAILY_DOCUMENT_CHARS = 4_000
 
 
-def select_filings(
-    filings: list[Filing], asset_class: AssetClass
-) -> list[tuple[Filing, SelectionRule]]:
-    """Apply the asset class rules; within a rule, preferred titles first, then newest."""
+def select_filings(filings: list[Filing]) -> list[tuple[Filing, SelectionRule]]:
+    """Apply the selection rules; within a rule, preferred titles first, then newest."""
     ordered = sorted(filings, key=lambda f: f.delivered_on, reverse=True)
     chosen: list[tuple[Filing, SelectionRule]] = []
     used: set[str] = set()
-    for rule in SELECTION_RULES.get(asset_class, ()):
+    for rule in SELECTION_RULES:
         picked = 0
         # Stable sort: preferred filings first, newest first within each group.
         for filing in sorted(ordered, key=lambda f: not rule.is_preferred(f)):
@@ -211,13 +195,13 @@ class ResearchCollector:
         self._filings = filings
         self._documents = documents
 
-    def collect(self, asset: AssetRef) -> ResearchDossier:
+    def collect(self, stock: Stock) -> ResearchDossier:
         gaps: list[str] = []
-        news = self._collect_news(asset, gaps)
-        fundamentals = self._collect_fundamentals(asset, gaps)
-        documents, others = self._collect_documents(asset, gaps)
+        news = self._collect_news(stock, gaps)
+        fundamentals = self._collect_fundamentals(stock, gaps)
+        documents, others = self._collect_documents(stock, gaps)
         return ResearchDossier(
-            asset=asset,
+            stock=stock,
             news=tuple(news),
             fundamentals=fundamentals,
             documents=tuple(documents),
@@ -225,47 +209,55 @@ class ResearchCollector:
             gaps=tuple(gaps),
         )
 
+    def collect_new(
+        self, stock: Stock, *, days: int, seen: frozenset[str] = frozenset()
+    ) -> ResearchDossier:
+        """Only what is new: news and CVM filings from the last ``days`` days whose URL is not
+        in ``seen`` (already reported). The fundamentals give the day's price."""
+        gaps: list[str] = []
+        news = [n for n in self._collect_news(stock, gaps, days=days) if n.url not in seen]
+        fundamentals = self._collect_fundamentals(stock, gaps)
+        documents: list[DocumentExcerpt] = []
+        if stock.cnpj:
+            try:
+                filings = self._filings.list_filings(stock, days=days, limit=50)
+            except InvestReporterError as exc:
+                gaps.append(f"Documentos oficiais: {exc}")
+            else:
+                new = [f for f in filings if f.url not in seen][:DAILY_MAX_DOCUMENTS]
+                documents = self._read_all([(f, DAILY_DOCUMENT_CHARS) for f in new])
+        return ResearchDossier(
+            stock=stock,
+            news=tuple(news),
+            fundamentals=fundamentals,
+            documents=tuple(documents),
+            gaps=tuple(gaps),
+        )
+
     # --- news ------------------------------------------------------------------------------
 
-    def _collect_news(self, asset: AssetRef, gaps: list[str]) -> list[NewsItem]:
-        queries = self._news_queries(asset)
-        if not queries:
-            gaps.append("Notícias: sem ticker nem nome para pesquisar.")
+    def _collect_news(self, stock: Stock, gaps: list[str], days: int = NEWS_DAYS) -> list[NewsItem]:
+        try:
+            found = self._news.search(stock.ticker, max_results=NEWS_MAX_ITEMS, days=days)
+        except InvestReporterError as exc:
+            gaps.append(f"Notícias: {exc}")
             return []
         items: list[NewsItem] = []
         seen: set[str] = set()
-        for query in queries:
-            try:
-                found = self._news.search(query, max_results=NEWS_MAX_ITEMS, days=NEWS_DAYS)
-            except InvestReporterError as exc:
-                gaps.append(f"Notícias ({query}): {exc}")
-                continue
-            for item in found:
-                key = item.title.strip().lower()
-                if key and key not in seen and len(items) < NEWS_MAX_ITEMS:
-                    seen.add(key)
-                    items.append(item)
+        for item in found:
+            key = item.title.strip().lower()
+            if key and key not in seen and len(items) < NEWS_MAX_ITEMS:
+                seen.add(key)
+                items.append(item)
         if not items:
-            gaps.append(f"Notícias: nenhuma notícia nos últimos {NEWS_DAYS} dias.")
+            gaps.append(f"Notícias: nenhuma notícia nos últimos {days} dias.")
         return sorted(items, key=_published_at, reverse=True)
-
-    @staticmethod
-    def _news_queries(asset: AssetRef) -> list[str]:
-        if asset.asset_class is AssetClass.MUTUAL_FUND:
-            return [f'"{asset.name}"'] if asset.name else []
-        queries = [asset.identifier]
-        if asset.foreign_ticker:
-            queries.append(f"{asset.foreign_ticker} stock")
-        return queries
 
     # --- fundamentals ------------------------------------------------------------------------
 
-    def _collect_fundamentals(self, asset: AssetRef, gaps: list[str]) -> Fundamentals | None:
-        if not asset.asset_class.is_listed:
-            gaps.append("Fundamentos de mercado: não aplicável (ativo não listado em bolsa).")
-            return None
+    def _collect_fundamentals(self, stock: Stock, gaps: list[str]) -> Fundamentals | None:
         try:
-            return self._fundamentals.fetch(asset.identifier)
+            return self._fundamentals.fetch(stock.ticker)
         except InvestReporterError as exc:
             gaps.append(f"Fundamentos: {exc}")
             return None
@@ -273,24 +265,24 @@ class ResearchCollector:
     # --- official documents --------------------------------------------------------------------
 
     def _collect_documents(
-        self, asset: AssetRef, gaps: list[str]
+        self, stock: Stock, gaps: list[str]
     ) -> tuple[list[DocumentExcerpt], list[Filing]]:
+        if not stock.cnpj:
+            gaps.append("Documentos oficiais: CNPJ da empresa desconhecido (registro da CVM).")
+            return [], []
         try:
-            filings = self._filings.list_filings(asset, days=FILINGS_DAYS, limit=50)
+            filings = self._filings.list_filings(stock, days=FILINGS_DAYS, limit=50)
         except InvestReporterError as exc:
             gaps.append(f"Documentos oficiais: {exc}")
-            filings = []
+            return [], []
+        if not filings:
+            gaps.append(f"Documentos oficiais: nenhum documento na CVM em {FILINGS_DAYS} dias.")
+            return [], []
 
-        selected = select_filings(filings, asset.asset_class)
+        selected = select_filings(filings)
         documents = self._read_all([(filing, rule.max_chars) for filing, rule in selected])
         used = {filing.url for filing, _ in selected}
         others = [f for f in filings if f.url not in used][:OTHER_FILINGS_LISTED]
-
-        if not filings:
-            gaps.append(
-                f"Documentos oficiais: nenhuma fonte oficial cobre "
-                f"{asset.asset_class.value} ou não há documentos em {FILINGS_DAYS} dias."
-            )
         return documents, others
 
     def _read_all(self, wanted: list[tuple[Filing, int]]) -> list[DocumentExcerpt]:
