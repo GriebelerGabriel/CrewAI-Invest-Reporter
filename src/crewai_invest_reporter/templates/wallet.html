@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Minha carteira</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fg: #18181b; --muted: #6b6b75; --bg: #f4f4f6; --card: #ffffff; --field: #fafafb;
+      --line: #e4e4e9; --accent: #0b7a4b; --on-accent: #ffffff;
+      --ok: #0b7a4b; --error: #b3261e;
+      --stock: #2563eb; --fii: #b45309; --etf: #7c3aed; --bdr: #0e7490; --fund: #52525b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #f4f4f5; --muted: #a1a1aa; --bg: #0f0f11; --card: #1a1a1d; --field: #141416;
+        --line: #2c2c31; --accent: #34c98a; --on-accent: #0b1f16;
+        --ok: #34c98a; --error: #ff8a80;
+        --stock: #7aa7ff; --fii: #f0b45a; --etf: #b79cff; --bdr: #5fcde4; --fund: #a1a1aa;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+           color: var(--fg); background: var(--bg); }
+    main { max-width: 880px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 1.75rem; line-height: 1.2; margin: 0; }
+    h2 { font-size: 1rem; margin: 0; }
+    .lead { color: var(--muted); margin: 6px 0 24px; }
+    .notice { border-radius: 10px; padding: 10px 14px; margin: 0 0 16px; border: 1px solid; }
+    .notice.ok { color: var(--ok); }
+    .notice.error { color: var(--error); }
+
+    .forms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .card { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line);
+            border-radius: 14px; padding: 18px; }
+    .card h2 { margin-bottom: 12px; }
+    .card .sub { color: var(--muted); font-size: .85rem; margin: -8px 0 12px; }
+    .fields { display: grid; gap: 10px; }
+    .fields.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    label { display: grid; gap: 4px; font-size: .8rem; font-weight: 600; color: var(--muted); }
+    input { font: inherit; font-weight: 400; color: var(--fg); background: var(--field);
+            border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; width: 100%; }
+    input::placeholder { color: var(--muted); opacity: .6; }
+    input[readonly] { opacity: .7; }
+    input:focus-visible, button:focus-visible, a:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 1px; }
+    .actions { display: flex; align-items: center; gap: 14px; margin-top: auto; padding-top: 14px; }
+    button { font: inherit; border: 0; border-radius: 8px; cursor: pointer; }
+    button.primary { background: var(--accent); color: var(--on-accent); font-weight: 600; padding: 9px 18px; }
+    a { color: var(--muted); }
+
+    .card.import { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 20px; }
+    .card.import .text { flex: 1; min-width: 0; }
+    .card.import .sub { margin: 4px 0 0; }
+    .card.import .upload { display: flex; flex: none; align-items: center; gap: 10px; }
+    input[type=file] { padding: 6px; width: 330px; color: var(--muted); font-size: .85rem; cursor: pointer; }
+    input[type=file]::file-selector-button {
+      font: inherit; font-weight: 600; color: var(--fg); background: var(--card); cursor: pointer;
+      border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; margin-right: 10px; }
+
+    .list-head { display: flex; align-items: baseline; justify-content: space-between; margin: 32px 0 10px; }
+    .count { color: var(--muted); font-size: .85rem; }
+    .holdings { list-style: none; margin: 0; padding: 0; background: var(--card);
+                border: 1px solid var(--line); border-radius: 14px; }
+    .holding { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto auto; align-items: center;
+               gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .holding:last-child { border-bottom: 0; }
+    .badge { --c: var(--fund); justify-self: start; font-size: .72rem; font-weight: 700; letter-spacing: .02em;
+             color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent);
+             border-radius: 999px; padding: 2px 8px; }
+    .badge.STOCK { --c: var(--stock); } .badge.REAL_ESTATE_FUND { --c: var(--fii); }
+    .badge.ETF { --c: var(--etf); } .badge.BDR { --c: var(--bdr); }
+    .who strong { display: block; }
+    .who small { display: block; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+    .pos { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
+    .pos small { color: var(--muted); font-weight: 400; }
+    .row-actions { display: flex; gap: 4px; }
+    .row-actions a, .row-actions button { background: none; color: var(--muted); font-size: .85rem;
+                                          padding: 4px 6px; border-radius: 6px; text-decoration: none; }
+    .row-actions a:hover { color: var(--fg); }
+    .row-actions button:hover { color: var(--error); }
+    .empty { color: var(--muted); text-align: center; padding: 28px 16px; }
+
+    @media (max-width: 640px) {
+      main { padding-top: 20px; }
+      .forms { grid-template-columns: minmax(0, 1fr); }
+      .card.import, .card.import .upload { flex-direction: column; align-items: stretch; }
+      input[type=file] { width: 100%; }
+      .holding { grid-template-columns: 52px minmax(0, 1fr) auto; }
+      .row-actions { grid-column: 2 / -1; justify-content: flex-end; margin-top: -6px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Minha carteira</h1>
+  <p class="lead">Cadastre as ações, FIIs, ETFs, BDRs e fundos que você tem.</p>
+
+  {% if error %}
+    <p class="notice error" role="alert">{{ error }}</p>
+  {% elif saved %}
+    <p class="notice ok" role="status">{{ saved | asset_id }} salvo na carteira.</p>
+  {% elif removed %}
+    <p class="notice ok" role="status">{{ removed | asset_id }} removido da carteira.</p>
+  {% elif imported %}
+    <p class="notice ok" role="status">
+      {{ imported }} {{ "ativo importado" if imported == "1" else "ativos importados" }} da B3.
+      Fundos cadastrados por CNPJ foram mantidos.
+    </p>
+  {% endif %}
+
+  {% set t = prefill if prefill.kind == "ticker" else {} %}
+  {% set f = prefill if prefill.kind == "fund" else {} %}
+  <div class="forms">
+    <form class="card" method="post" action="{{ url_for('add') }}">
+      <h2>{{ "Editar " ~ t.identifier if t.editing else "Ação, FII, ETF ou BDR" }}</h2>
+      <p class="sub">Pelo ticker e a quantidade que você tem.</p>
+      <input type="hidden" name="kind" value="ticker">
+      <div class="fields two">
+        <label>Ticker
+          <input name="identifier" list="tickers" required autocomplete="off" autocapitalize="characters"
+                 spellcheck="false" placeholder="ex.: PETR4" value="{{ t.identifier }}" {{ "readonly" if t.editing }}>
+        </label>
+        <label>Quantidade
+          <input name="amount" required inputmode="decimal" placeholder="ex.: 100" value="{{ t.amount }}">
+        </label>
+      </div>
+      <div class="actions">
+        <button class="primary" type="submit">{{ "Salvar" if t.editing else "Adicionar" }}</button>
+        {% if t.editing %}<a href="{{ url_for('index') }}">Cancelar</a>{% endif %}
+      </div>
+    </form>
+
+    <form class="card" method="post" action="{{ url_for('add') }}">
+      <h2>{{ "Editar fundo" if f.editing else "Fundo de investimento" }}</h2>
+      <p class="sub">Pelo CNPJ e o valor que você tem hoje.</p>
+      <input type="hidden" name="kind" value="fund">
+      <div class="fields">
+        <label>CNPJ do fundo
+          <input name="identifier" required inputmode="numeric" autocomplete="off" placeholder="00.000.000/0000-00"
+                 value="{{ f.identifier }}" {{ "readonly" if f.editing }}>
+        </label>
+        <div class="fields two">
+          <label>Nome do fundo
+            <input name="name" autocomplete="off" placeholder="usado para buscar notícias" value="{{ f.name }}">
+          </label>
+          <label>Valor (R$)
+            <input name="amount" required inputmode="decimal" placeholder="ex.: 5.000,00" value="{{ f.amount }}">
+          </label>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" type="submit">{{ "Salvar" if f.editing else "Adicionar" }}</button>
+        {% if f.editing %}<a href="{{ url_for('index') }}">Cancelar</a>{% endif %}
+      </div>
+    </form>
+
+    <form class="card import" method="post" action="{{ url_for('import_b3') }}" enctype="multipart/form-data">
+      <div class="text">
+        <h2>Importar da B3</h2>
+        <p class="sub">
+          Na Área do Investidor da B3, baixe sua posição em Excel e envie aqui. Substitui suas ações,
+          FIIs, ETFs e BDRs; fundos cadastrados por CNPJ continuam.
+        </p>
+      </div>
+      <div class="upload">
+        <input type="file" name="file" accept=".xlsx" required aria-label="Arquivo de posição da B3 (.xlsx)">
+        <button class="primary" type="submit">Importar</button>
+      </div>
+    </form>
+  </div>
+  <datalist id="tickers">
+    {% for ticker, name in suggestions %}<option value="{{ ticker }}">{{ name }}</option>{% endfor %}
+  </datalist>
+
+  <div class="list-head">
+    <h2>Seus ativos</h2>
+    <span class="count">{{ entries | length }} {{ "ativo" if entries | length == 1 else "ativos" }}</span>
+  </div>
+  {% if entries %}
+  <ul class="holdings">
+    {% for e in entries %}
+    <li class="holding">
+      <span class="badge {{ e.asset_class.value }}">{{ short_label(e.asset_class) }}</span>
+      <div class="who">
+        <strong>{{ e.identifier | asset_id }}</strong>
+        {% if e.name %}<small>{{ e.name }}</small>{% endif %}
+      </div>
+      <div class="pos">
+        {% if e.by_ticker %}{{ e.amount | qty }} <small>{{ unit(e) }}</small>
+        {% else %}<small>R$</small> {{ e.amount | br }}{% endif %}
+      </div>
+      <div class="row-actions">
+        <a href="{{ url_for('index', editar=e.identifier) }}">Editar</a>
+        <form method="post" action="{{ url_for('remove') }}"
+              onsubmit='return confirm({{ ("Remover " ~ (e.identifier | asset_id) ~ " da carteira?") | tojson }})'>
+          <input type="hidden" name="identifier" value="{{ e.identifier }}">
+          <button type="submit">Remover</button>
+        </form>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="holdings empty">Nenhum ativo ainda. Adicione o primeiro acima.</p>
+  {% endif %}
+</main>
+</body>
+</html>

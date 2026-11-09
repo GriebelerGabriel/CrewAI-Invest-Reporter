@@ -1,0 +1,84 @@
+filings_analysis_task:
+  description: >
+    Analyze the official documents of {asset_id} ({asset_name}), a {asset_class}, as of {today}.
+    Asset-specific guidance: {analysis_guidelines}
+
+    The documents below were collected automatically from official sources and selected by
+    fixed rules. Each has metadata (title, category, delivered_on, url, source) and an
+    excerpt in "text" ("truncated": true means only the beginning is included). Documents
+    with "error" could not be read. "other_recent_filings" lists further filings by title only.
+
+    {official_documents}
+
+    Known data gaps: {data_gaps}
+
+    IMPORTANT: Use only facts written in these excerpts, quoting figures exactly with their
+    reference period and document date. Do not invent or infer figures. If there are no
+    readable documents, say so explicitly and list what is missing.
+  expected_output: >
+    For each document read (title, date, source, url): the key facts (results/indicators with
+    reference period, guidance or manager commentary, distributions/dividends, material events
+    and risks). Then a short list of notable items from "other_recent_filings".
+  agent: filings_analyst
+
+news_synthesis_task:
+  description: >
+    Synthesize the recent news about {asset_id} ({asset_name}) together with the findings
+    from the official documents. News items (collected automatically from Google News,
+    last 30 days; headlines only):
+
+    {news_items}
+
+    Ignore low-signal items ("quanto renderia", simulators, generic quote recaps).
+    Extract: (1) key themes, (2) catalysts, (3) risks, (4) sentiment
+    (positive/neutral/negative) with justification, and (5) what to watch in the next 30-90
+    days. When news and official documents disagree, rely on the official documents and flag
+    it. Cite news by title and url. If there are no news items, say so.
+  expected_output: >
+    A concise synthesis with sections: Themes, Catalysts, Risks, Sentiment, Watchlist.
+  agent: news_synthesizer
+
+fundamentals_task:
+  description: >
+    Interpret the fundamentals and market data of {asset_id} ({asset_class}).
+    Asset-specific guidance: {analysis_guidelines}
+    Data (collected automatically from Investidor10; ratios such as dividendYield and
+    priceChange12m are fractions, e.g. 0.12 = 12%; null means unavailable):
+
+    {fundamentals_data}
+
+    IMPORTANT: Use only these numbers. Never invent or estimate a value; write
+    "Não disponível" for missing metrics. If the data is null for an unlisted fund,
+    state that market multiples are not applicable.
+  expected_output: >
+    A structured summary of the indicators that apply to this asset type, plus a short
+    interpretation.
+  agent: fundamentals_analyst
+
+investment_rating_task:
+  description: >
+    Combine the official-document analysis, the news synthesis and the fundamentals for
+    {asset_id} ({asset_name}), a {asset_class}, as of {today}.
+    Asset-specific guidance: {analysis_guidelines}
+    Known data gaps: {data_gaps}
+    Produce a final investment status category:
+    - Excellent to invest
+    - Good to invest
+    - Neutral / Watch
+    - Bad to invest
+    Then justify the rating with evidence from (a) official reports, (b) news, (c) fundamentals,
+    and (d) market data. When key data is missing, lower your confidence and say why.
+    Add a section with key risks and what data could change the rating.
+    Add a section "Risco do Investimento (estimativa)" with two percentages that sum to 100:
+    (1) probabilidade de ser um bom investimento e (2) probabilidade de perder dinheiro, com 1-2 linhas de justificativa.
+    Add a section "Fontes" listing the URLs of the official documents and news used.
+    IMPORTANT: Write the full report in Brazilian Portuguese (pt-BR) and keep all section titles in pt-BR.
+    IMPORTANT: Do not invent, guess, or extrapolate any numbers. Only use numeric values
+    explicitly present in the previous tasks. If a number is not available, state "Não disponível".
+  expected_output: >
+    Um relatório em markdown (sem '```') escrito em português (pt-BR) incluindo:
+    Resumo Executivo, Relatórios Oficiais (principais pontos dos documentos lidos, com datas),
+    Resumo de Notícias, Fundamentos & Dados de Mercado, Classificação (com categoria),
+    Risco do Investimento (estimativa), Justificativa, Riscos, O Que Mudaria Minha Opinião,
+    Limitações dos Dados e Fontes.
+  agent: investment_rater

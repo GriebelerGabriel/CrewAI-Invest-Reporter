@@ -1,4 +1,9 @@
 .env
+wallet.json
 __pycache__/
 .DS_Store
 reports/
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
